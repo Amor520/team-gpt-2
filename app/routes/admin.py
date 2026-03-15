@@ -201,10 +201,11 @@ async def welfare_dashboard(
         welfare_limit_raw = await settings_service.get_setting(db, "welfare_common_code_limit", "0")
         welfare_used_raw = await settings_service.get_setting(db, "welfare_common_code_used_count", "0")
 
-        # 福利通用码的可用次数应按“可邀请席位”计算：sum(max_members - 1)
-        usable_capacity_stmt = select(func.sum(Team.max_members - 1)).where(
+        # 福利通用码可用次数应与当前可用车位一致：sum(max_members - current_members)
+        usable_capacity_stmt = select(func.sum(Team.max_members - Team.current_members)).where(
             Team.pool_type == "welfare",
-            Team.max_members > 1
+            Team.status == "active",
+            Team.current_members < Team.max_members
         )
         usable_capacity_result = await db.execute(usable_capacity_stmt)
         usable_capacity = int(usable_capacity_result.scalar() or 0)
@@ -218,7 +219,7 @@ async def welfare_dashboard(
         except Exception:
             welfare_used = 0
 
-        # 兼容历史错误值：展示时按真实可邀请席位收敛
+        # 兼容历史错误值：展示时按当前真实可用车位收敛
         effective_limit = usable_capacity if usable_capacity >= 0 else 0
 
         stats = {
@@ -261,9 +262,10 @@ async def generate_welfare_common_code(
 ):
     """生成/更新福利通用兑换码（不落库到 redemption_codes，仅存 settings）。"""
     try:
-        seats_stmt = select(func.sum(Team.max_members - 1)).where(
+        seats_stmt = select(func.sum(Team.max_members - Team.current_members)).where(
             Team.pool_type == "welfare",
-            Team.max_members > 1
+            Team.status == "active",
+            Team.current_members < Team.max_members
         )
         seats_result = await db.execute(seats_stmt)
         total_seats = int(seats_result.scalar() or 0)
