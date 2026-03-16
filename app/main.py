@@ -37,8 +37,13 @@ MIN_TOKEN_REFRESH_INTERVAL_MINUTES = 5
 MAX_TOKEN_REFRESH_INTERVAL_MINUTES = 24 * 60
 MIN_TOKEN_REFRESH_WINDOW_HOURS = 1
 MAX_TOKEN_REFRESH_WINDOW_HOURS = 24
-PERIODIC_TEAM_SYNC_INTERVAL_HOURS = 12
-PERIODIC_TEAM_SYNC_DAYS = 7
+DEFAULT_PERIODIC_TEAM_SYNC_ENABLED = True
+DEFAULT_PERIODIC_TEAM_SYNC_INTERVAL_HOURS = 12
+DEFAULT_PERIODIC_TEAM_SYNC_DAYS = 7
+MIN_PERIODIC_TEAM_SYNC_INTERVAL_HOURS = 1
+MAX_PERIODIC_TEAM_SYNC_INTERVAL_HOURS = 24 * 7
+MIN_PERIODIC_TEAM_SYNC_DAYS = 1
+MAX_PERIODIC_TEAM_SYNC_DAYS = 30
 
 
 def _safe_int(value, default):
@@ -54,6 +59,76 @@ def normalize_token_refresh_interval(interval_minutes: int) -> int:
 
 def normalize_token_refresh_window(window_hours: int) -> int:
     return max(MIN_TOKEN_REFRESH_WINDOW_HOURS, min(MAX_TOKEN_REFRESH_WINDOW_HOURS, window_hours))
+
+
+
+
+def normalize_periodic_team_sync_interval_hours(interval_hours: int) -> int:
+    return max(MIN_PERIODIC_TEAM_SYNC_INTERVAL_HOURS, min(MAX_PERIODIC_TEAM_SYNC_INTERVAL_HOURS, interval_hours))
+
+
+def normalize_periodic_team_sync_days(refresh_interval_days: int) -> int:
+    return max(MIN_PERIODIC_TEAM_SYNC_DAYS, min(MAX_PERIODIC_TEAM_SYNC_DAYS, refresh_interval_days))
+
+
+def configure_periodic_team_sync_job(enabled: bool, interval_hours: int) -> int:
+    """配置（或重配置）Team 周期状态同步任务。"""
+    normalized_interval = normalize_periodic_team_sync_interval_hours(interval_hours)
+    existing_job = scheduler.get_job("periodic_team_status_sync")
+
+    if not enabled:
+        if existing_job:
+            scheduler.remove_job("periodic_team_status_sync")
+        return normalized_interval
+
+    trigger = IntervalTrigger(hours=normalized_interval)
+    if existing_job:
+        scheduler.reschedule_job("periodic_team_status_sync", trigger=trigger)
+    else:
+        scheduler.add_job(
+            scheduled_periodic_team_status_sync,
+            trigger=trigger,
+            id="periodic_team_status_sync",
+            replace_existing=True
+        )
+
+    if not scheduler.running:
+        scheduler.start()
+
+    return normalized_interval
+
+
+async def configure_periodic_team_sync_job_from_settings() -> tuple[bool, int, int]:
+    """从系统设置读取 Team 周期同步配置并应用到定时任务。"""
+    from app.services.settings import settings_service
+
+    async with AsyncSessionLocal() as session:
+        enabled_raw = await settings_service.get_setting(
+            session,
+            "periodic_team_sync_enabled",
+            str(DEFAULT_PERIODIC_TEAM_SYNC_ENABLED).lower()
+        )
+        interval_raw = await settings_service.get_setting(
+            session,
+            "periodic_team_sync_interval_hours",
+            str(DEFAULT_PERIODIC_TEAM_SYNC_INTERVAL_HOURS)
+        )
+        days_raw = await settings_service.get_setting(
+            session,
+            "periodic_team_sync_days",
+            str(DEFAULT_PERIODIC_TEAM_SYNC_DAYS)
+        )
+
+    enabled = str(enabled_raw).lower() in {"1", "true", "yes", "on"}
+    interval_hours = normalize_periodic_team_sync_interval_hours(
+        _safe_int(interval_raw, DEFAULT_PERIODIC_TEAM_SYNC_INTERVAL_HOURS)
+    )
+    refresh_days = normalize_periodic_team_sync_days(
+        _safe_int(days_raw, DEFAULT_PERIODIC_TEAM_SYNC_DAYS)
+    )
+
+    applied_interval = configure_periodic_team_sync_job(enabled, interval_hours)
+    return enabled, applied_interval, refresh_days
 
 
 def configure_proactive_refresh_job(interval_minutes: int) -> int:
@@ -117,16 +192,27 @@ async def scheduled_proactive_refresh():
 
 
 async def scheduled_periodic_team_status_sync():
-    """定时按 7 天周期同步 Team 状态（基于导入/最近同步时间）。"""
+    """定时按配置周期同步 Team 状态（基于导入/最近同步时间）。"""
+    from app.services.settings import settings_service
+
     try:
         async with AsyncSessionLocal() as session:
+            days_raw = await settings_service.get_setting(
+                session,
+                "periodic_team_sync_days",
+                str(DEFAULT_PERIODIC_TEAM_SYNC_DAYS)
+            )
+            refresh_days = normalize_periodic_team_sync_days(
+                _safe_int(days_raw, DEFAULT_PERIODIC_TEAM_SYNC_DAYS)
+            )
+
             stats = await team_service.sync_teams_due_for_periodic_refresh(
                 session,
-                refresh_interval_days=PERIODIC_TEAM_SYNC_DAYS
+                refresh_interval_days=refresh_days
             )
             logger.info(
-                "Team 周期状态同步完成: total=%s due=%s synced=%s failed=%s skipped=%s",
-                stats["total"], stats["due"], stats["synced"], stats["failed"], stats["skipped"]
+                "Team 周期状态同步完成: total=%s due=%s synced=%s failed=%s skipped=%s days=%s",
+                stats["total"], stats["due"], stats["synced"], stats["failed"], stats["skipped"], refresh_days
             )
     except Exception as e:
         logger.error(f"Team 周期状态同步任务执行失败: {e}")
@@ -159,17 +245,15 @@ async def lifespan(app: FastAPI):
         interval = await configure_proactive_refresh_job_from_settings()
         logger.info(f"定时任务已启动: 每 {interval} 分钟预刷新 Team Token")
 
-        scheduler.add_job(
-            scheduled_periodic_team_status_sync,
-            trigger=IntervalTrigger(hours=PERIODIC_TEAM_SYNC_INTERVAL_HOURS),
-            id="periodic_team_status_sync",
-            replace_existing=True
-        )
-        logger.info(
-            "定时任务已启动: 每 %s 小时检查一次 Team 状态同步（每 %s 天同步）",
-            PERIODIC_TEAM_SYNC_INTERVAL_HOURS,
-            PERIODIC_TEAM_SYNC_DAYS
-        )
+        periodic_enabled, periodic_interval, periodic_days = await configure_periodic_team_sync_job_from_settings()
+        if periodic_enabled:
+            logger.info(
+                "定时任务已启动: 每 %s 小时检查一次 Team 状态同步（每 %s 天同步）",
+                periodic_interval,
+                periodic_days
+            )
+        else:
+            logger.info("Team 周期状态同步任务已禁用")
 
         logger.info("数据库初始化完成")
     except Exception as e:

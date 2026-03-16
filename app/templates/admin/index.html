@@ -512,7 +512,9 @@
                 showToast('刷新成功', 'success');
                 setTimeout(() => location.reload(), 1000);
             } else {
-                showToast(data.error || '刷新失败', 'error');
+                showToast(data.error || '刷新失败（状态可能已更新）', 'error');
+                // 即使接口返回失败，也可能已经在后端更新了 Team 状态（例如标记为 banned）
+                setTimeout(() => location.reload(), 1200);
             }
         } catch (error) {
             showToast('网络错误', 'error');
@@ -555,7 +557,9 @@
                     }
                 }
             } else {
-                showToast(data.error || '刷新失败', 'error');
+                showToast(data.error || '刷新失败（状态可能已更新）', 'error');
+                // 刷新失败时也刷新页面，避免列表/筛选中的状态显示停留在旧值
+                setTimeout(() => location.reload(), 1200);
             }
         } catch (error) {
             showToast('网络错误', 'error');

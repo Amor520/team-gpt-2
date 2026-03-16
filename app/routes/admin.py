@@ -1605,6 +1605,9 @@ async def settings_page(
                 "token_refresh_interval_minutes": await settings_service.get_setting(db, "token_refresh_interval_minutes", "30"),
                 "token_refresh_window_hours": await settings_service.get_setting(db, "token_refresh_window_hours", "2"),
                 "token_refresh_client_id": await settings_service.get_setting(db, "token_refresh_client_id", ""),
+                "periodic_team_sync_enabled": await settings_service.get_setting(db, "periodic_team_sync_enabled", "true"),
+                "periodic_team_sync_interval_hours": await settings_service.get_setting(db, "periodic_team_sync_interval_hours", "12"),
+                "periodic_team_sync_days": await settings_service.get_setting(db, "periodic_team_sync_days", "7"),
                 "default_team_max_members": await settings_service.get_setting(db, "default_team_max_members", "6"),
             }
         )
@@ -1645,6 +1648,13 @@ class TokenRefreshSettingsRequest(BaseModel):
 class TeamImportSettingsRequest(BaseModel):
     """Team 导入设置请求"""
     default_team_max_members: int = Field(6, ge=1, le=100, description="新导入 Team 的默认总席位")
+
+
+class TeamAutoRefreshSettingsRequest(BaseModel):
+    """Team 自动刷新设置请求"""
+    enabled: bool = Field(True, description="是否启用 Team 周期状态自动刷新")
+    interval_hours: int = Field(12, ge=1, le=168, description="检查间隔（小时）")
+    refresh_interval_days: int = Field(7, ge=1, le=30, description="同步周期（天）")
 
 
 class AnnouncementUpdateRequest(BaseModel):
@@ -1900,6 +1910,67 @@ async def update_token_refresh_settings(
 
     except Exception as e:
         logger.error(f"更新 Token 自动刷新设置失败: {e}")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"success": False, "error": f"更新失败: {str(e)}"}
+        )
+
+
+@router.post("/settings/team-auto-refresh")
+async def update_team_auto_refresh_settings(
+    team_refresh_data: TeamAutoRefreshSettingsRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin)
+):
+    """更新 Team 周期状态自动刷新设置。"""
+    try:
+        from app.main import configure_periodic_team_sync_job
+        from app.services.settings import settings_service
+
+        logger.info(
+            "管理员更新 Team 自动刷新配置: enabled=%s, interval_hours=%s, days=%s",
+            team_refresh_data.enabled,
+            team_refresh_data.interval_hours,
+            team_refresh_data.refresh_interval_days,
+        )
+
+        settings_payload = {
+            "periodic_team_sync_enabled": str(team_refresh_data.enabled).lower(),
+            "periodic_team_sync_interval_hours": str(team_refresh_data.interval_hours),
+            "periodic_team_sync_days": str(team_refresh_data.refresh_interval_days),
+        }
+
+        success = await settings_service.update_settings(db, settings_payload)
+        if not success:
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"success": False, "error": "保存失败"}
+            )
+
+        applied_interval = configure_periodic_team_sync_job(
+            team_refresh_data.enabled,
+            team_refresh_data.interval_hours,
+        )
+
+        if team_refresh_data.enabled:
+            message = (
+                "Team 自动刷新配置已保存（每 "
+                f"{applied_interval} 小时检查一次，超过 {team_refresh_data.refresh_interval_days} 天未同步则执行刷新）"
+            )
+        else:
+            message = "Team 自动刷新已关闭"
+
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": message,
+                "enabled": team_refresh_data.enabled,
+                "interval_hours": applied_interval,
+                "refresh_interval_days": team_refresh_data.refresh_interval_days,
+            }
+        )
+    except Exception as e:
+        logger.error(f"更新 Team 自动刷新设置失败: {e}")
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"success": False, "error": f"更新失败: {str(e)}"}

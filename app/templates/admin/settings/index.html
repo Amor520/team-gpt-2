@@ -11,6 +11,7 @@
     <a href="#settings-password" class="settings-nav-pill settings-nav-link" data-target="settings-password">修改密码</a>
     <a href="#settings-log" class="settings-nav-pill settings-nav-link" data-target="settings-log">日志级别</a>
     <a href="#settings-refresh" class="settings-nav-pill settings-nav-link" data-target="settings-refresh">Token 预刷新</a>
+    <a href="#settings-team-auto-refresh" class="settings-nav-pill settings-nav-link" data-target="settings-team-auto-refresh">Team 自动刷新</a>
     <a href="#settings-team-import" class="settings-nav-pill settings-nav-link" data-target="settings-team-import">Team 导入</a>
     <a href="#settings-webhook" class="settings-nav-pill settings-nav-link" data-target="settings-webhook">库存预警</a>
 </div>
@@ -128,6 +129,40 @@
         <button type="submit" class="btn btn-primary">保存 Token 刷新配置</button>
     </form>
 </div>
+
+<!-- Team 自动刷新配置 -->
+<div class="content-section settings-panel" id="settings-team-auto-refresh">
+    <div class="section-header">
+        <h3>Team 自动刷新</h3>
+    </div>
+
+    <form id="teamAutoRefreshForm" class="settings-form">
+        <div class="form-group">
+            <label class="checkbox-label">
+                <input type="checkbox" id="teamAutoRefreshEnabled" name="enabled" {% if (periodic_team_sync_enabled or 'true')|lower in ['1','true','yes','on'] %}checked{% endif %}>
+                <span>启用 Team 周期状态自动刷新</span>
+            </label>
+            <p class="form-help">关闭后将不再自动检查 Team 状态，仅可手动刷新。</p>
+        </div>
+
+        <div class="form-group">
+            <label for="teamAutoRefreshInterval">检查间隔 (小时)</label>
+            <input type="number" id="teamAutoRefreshInterval" name="interval_hours"
+                value="{{ periodic_team_sync_interval_hours or '12' }}" min="1" max="168" class="form-control">
+            <p class="form-help">定时任务运行频率。建议 6~24 小时。</p>
+        </div>
+
+        <div class="form-group">
+            <label for="teamAutoRefreshDays">触发刷新阈值 (天)</label>
+            <input type="number" id="teamAutoRefreshDays" name="refresh_interval_days"
+                value="{{ periodic_team_sync_days or '7' }}" min="1" max="30" class="form-control">
+            <p class="form-help">当 Team 距上次同步达到该天数时，自动执行状态刷新。</p>
+        </div>
+
+        <button type="submit" class="btn btn-primary">保存 Team 自动刷新配置</button>
+    </form>
+</div>
+
 
 <!-- Team 导入配置 -->
 <div class="content-section settings-panel" id="settings-team-import">
@@ -379,6 +414,45 @@
 
             if (response.ok && data.success) {
                 showToast(data.message || 'Token 刷新配置已保存', 'success');
+            } else {
+                showToast(data.error || '保存失败', 'error');
+            }
+        } catch (error) {
+            showToast('网络错误', 'error');
+        }
+    });
+
+    // Team 自动刷新配置表单
+    document.getElementById('teamAutoRefreshForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const enabled = document.getElementById('teamAutoRefreshEnabled').checked;
+        const interval_hours = parseInt(document.getElementById('teamAutoRefreshInterval').value);
+        const refresh_interval_days = parseInt(document.getElementById('teamAutoRefreshDays').value);
+
+        if (isNaN(interval_hours) || interval_hours < 1 || interval_hours > 168) {
+            showToast('检查间隔必须在 1~168 小时之间', 'error');
+            return;
+        }
+
+        if (isNaN(refresh_interval_days) || refresh_interval_days < 1 || refresh_interval_days > 30) {
+            showToast('触发刷新阈值必须在 1~30 天之间', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch('/admin/settings/team-auto-refresh', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ enabled, interval_hours, refresh_interval_days })
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                showToast(data.message || 'Team 自动刷新配置已保存', 'success');
             } else {
                 showToast(data.error || '保存失败', 'error');
             }

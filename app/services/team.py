@@ -141,9 +141,12 @@ class TeamService:
         # 如果是 Token 过期，尝试立即刷新一次（为下次重试做准备）
         if is_token_expired:
             logger.info(f"Team {team.id} Token 过期，尝试后台刷新...")
-            # 注意：此处不等待刷新结果，仅作为修复尝试
-            await self.ensure_access_token(team, db_session)
-            
+            # 注意：此处会根据刷新结果立即修正状态，避免前端仍显示 active
+            refreshed_token = await self.ensure_access_token(team, db_session)
+            if not refreshed_token and team.status != "banned":
+                logger.error(f"Team {team.id} Token 过期且刷新失败，立即标记为 expired")
+                team.status = "expired"
+
         await db_session.commit()
         return True
         
@@ -1052,6 +1055,11 @@ class TeamService:
                         "message": None,
                         "error": "Team 账号已封禁/失效 (token_invalidated)"
                     }
+
+                if team.status != "expired":
+                    team.status = "expired"
+                    await db_session.commit()
+
                 return {
                     "success": False,
                     "message": None,
