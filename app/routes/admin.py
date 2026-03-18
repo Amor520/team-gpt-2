@@ -134,6 +134,7 @@ async def admin_dashboard(
     per_page: int = 20,
     search: Optional[str] = None,
     status_filter: Optional[str] = None,
+    status: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_admin)
 ):
@@ -142,7 +143,10 @@ async def admin_dashboard(
     """
     try:
         from app.main import templates
-        logger.info(f"管理员访问控制台, search={search}, page={page}, per_page={per_page}")
+        if status_filter is None and status is not None:
+            status_filter = status
+
+        logger.info(f"管理员访问控制台, search={search}, page={page}, per_page={per_page}, status_filter={status_filter}")
 
         # 设置每页数量
         # per_page = 20 (Removed hardcoded value)
@@ -200,12 +204,16 @@ async def welfare_dashboard(
     per_page: int = 20,
     search: Optional[str] = None,
     status_filter: Optional[str] = None,
+    status: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_admin)
 ):
     """福利车位管理页"""
     try:
         from app.main import templates
+
+        if status_filter is None and status is not None:
+            status_filter = status
 
         teams_result = await team_service.get_all_teams(db, page=page, per_page=per_page, search=search, status=status_filter, pool_type="welfare")
         team_stats = await team_service.get_stats(db, pool_type="welfare")

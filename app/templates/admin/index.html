@@ -131,7 +131,7 @@
                     </a>
                     {% endif %}
                     {% if status_filter %}
-                    <input type="hidden" name="status" value="{{ status_filter }}">
+                    <input type="hidden" name="status_filter" value="{{ status_filter }}">
                     {% endif %}
                 </div>
             </form>
@@ -901,9 +901,9 @@
     function filterByStatus(status) {
         const url = new URL(window.location.href);
         if (status) {
-            url.searchParams.set('status', status);
+            url.searchParams.set('status_filter', status);
         } else {
-            url.searchParams.delete('status');
+            url.searchParams.delete('status_filter');
         }
         url.searchParams.set('page', 1);
         window.location.href = url.toString();
