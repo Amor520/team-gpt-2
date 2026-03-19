@@ -675,6 +675,7 @@ async function handleBatchImport(event) {
 
     submitButton.disabled = true;
     submitButton.textContent = '导入中...';
+    let shouldResetBatchForm = false;
 
     try {
         const response = await fetch('/admin/teams/import', {
@@ -745,6 +746,7 @@ async function handleBatchImport(event) {
                     finalSummaryEl.textContent = `总数: ${data.total} | 成功: ${data.success_count} | 失败: ${data.failed_count}`;
 
                     if (data.failed_count === 0) {
+                        shouldResetBatchForm = true;
                         showToast('全部导入成功！', 'success');
                     } else {
                         showToast(`导入完成，成功 ${data.success_count} 条，失败 ${data.failed_count} 条`, 'warning');
@@ -782,7 +784,9 @@ async function handleBatchImport(event) {
     } catch (error) {
         showToast(error.message || '网络错误', 'error');
     } finally {
-        resetBatchImportForm();
+        if (shouldResetBatchForm) {
+            resetBatchImportForm();
+        }
         submitButton.disabled = false;
         submitButton.textContent = '批量导入';
     }
