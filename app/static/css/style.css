@@ -267,7 +267,8 @@ body.admin-theme .toast {
 
 .app-layout {
     display: flex;
-    align-items: stretch;
+    align-items: flex-start;
+    flex-wrap: nowrap;
     max-width: 1440px;
     margin: 0 auto;
 }
@@ -280,6 +281,7 @@ body.admin-theme .toast {
 .sidebar {
     width: 260px;
     flex-shrink: 0;
+    align-self: flex-start;
     padding: 2rem 1.5rem;
     border-right: 1px solid var(--border-base);
     min-height: calc(100vh - 64px);
@@ -325,7 +327,8 @@ body.admin-theme .toast {
 }
 
 .main-content {
-    flex: 1;
+    flex: 1 1 auto;
+    width: calc(100% - 260px);
     min-width: 0;
     /* Allow content to shrink and trigger scrolling */
     padding: 2rem 3rem;
