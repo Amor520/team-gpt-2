@@ -1415,7 +1415,6 @@ body.admin-theme .toast {
         padding: 0 1rem;
     }
 
-    body.admin-theme .app-layout,
     body.admin-theme .main-container {
         position: static;
         z-index: auto;
@@ -1477,21 +1476,7 @@ body.admin-theme .toast {
     }
 
     .sidebar-overlay {
-        position: fixed;
-        top: 0;
-        left: var(--mobile-sidebar-width);
-        right: 0;
-        bottom: 0;
-        background-color: rgba(0, 0, 0, 0.28);
-        z-index: 1000;
-        opacity: 0;
-        pointer-events: none;
-        transition: opacity var(--transition-base);
-    }
-
-    .sidebar-overlay.show {
-        opacity: 1;
-        pointer-events: auto;
+        display: none;
     }
 
     .main-content {
