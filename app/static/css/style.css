@@ -177,6 +177,29 @@ body.admin-theme .page-header {
     z-index: 1;
 }
 
+body.modal-open .navbar,
+body.modal-open .sidebar,
+body.modal-open .footer {
+    pointer-events: none;
+    user-select: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity var(--transition-base), visibility var(--transition-base);
+}
+
+body.modal-open .main-container {
+    pointer-events: none;
+    user-select: none;
+}
+
+body.modal-open .sidebar-overlay {
+    display: none !important;
+}
+
+body.modal-open .modal-overlay.show {
+    z-index: 2000;
+}
+
 body.admin-theme .menu-item a:hover,
 body.admin-theme .data-table tbody tr:hover td,
 body.admin-theme .dropdown-item:hover {
@@ -1411,13 +1434,13 @@ body.admin-theme .toast {
     }
 
     .modal-overlay {
-        top: 64px;
+        top: 0;
         padding: 1.5rem 2rem 2rem;
     }
 
     .modal {
-        margin: 0 auto;
-        max-height: calc(100vh - 64px - 3.5rem);
+        margin: auto;
+        max-height: calc(100vh - 3.5rem);
     }
 }
 
@@ -1511,11 +1534,12 @@ body.admin-theme .toast {
     .sidebar-overlay {
         position: fixed;
         top: 64px;
-        left: var(--mobile-sidebar-width);
+        left: 0;
         right: 0;
         bottom: 0;
         background-color: rgba(15, 23, 42, 0.4);
-        backdrop-filter: blur(4px);
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
         z-index: 1090;
         opacity: 0;
         pointer-events: none;
