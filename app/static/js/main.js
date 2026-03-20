@@ -141,6 +141,15 @@ function showToast(message, type = 'info') {
     }, 3000);
 }
 
+function mountGlobalOverlayNodes() {
+    const nodes = document.querySelectorAll('.modal-overlay, #toast');
+    nodes.forEach((node) => {
+        if (node && node.parentElement !== document.body) {
+            document.body.appendChild(node);
+        }
+    });
+}
+
 // 日期格式化函数
 function formatDateTime(dateString) {
     if (!dateString) return '-';
@@ -248,6 +257,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     cleanupLegacyThemeSettingsSection();
     initThemeSwitcher();
+    mountGlobalOverlayNodes();
     syncResponsiveSidebarMount();
     window.addEventListener('resize', syncResponsiveSidebarMount);
 

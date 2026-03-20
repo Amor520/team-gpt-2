@@ -1288,7 +1288,7 @@ body.admin-theme .toast {
     transform: translateY(calc(100% + 20px));
     opacity: 0;
     transition: transform var(--transition-base), opacity var(--transition-fast);
-    z-index: 1200;
+    z-index: 4000;
     border: 1px solid var(--border-base);
 }
 
