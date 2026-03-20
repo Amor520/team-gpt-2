@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import patch
 
@@ -7,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.database import Base
 from app.models import RedemptionCode, RedemptionRecord, Team, TeamEmailMapping
 from app.services.redeem_flow import RedeemFlowService
+from app.services.redemption import RedemptionService
 from app.services.team import TeamService
 
 
@@ -23,13 +25,15 @@ class StubRedemptionService:
 
 
 class StubTeamService:
-    def __init__(self, sync_results=None, active_team_ids_by_email=None):
+    def __init__(self, sync_results=None, active_team_ids_by_email=None, reserve_results=None):
         self.sync_results = sync_results or {}
         self.active_team_ids_by_email = {
             str(email).strip().lower(): set(team_ids)
             for email, team_ids in (active_team_ids_by_email or {}).items()
         }
         self.mapping_updates = []
+        self.reserve_results = reserve_results or {}
+        self.released_team_ids = []
 
     async def sync_team_info(self, team_id, db_session):
         team_results = (self.sync_results or {}).get(team_id, [])
@@ -41,6 +45,44 @@ class StubTeamService:
             return result
 
         return {"success": True, "member_emails": [], "error": None}
+
+
+    async def reserve_seat_if_available(self, team_id, db_session, pool_type="normal"):
+        queued = self.reserve_results.get(team_id) or []
+        if queued:
+            result = queued.pop(0)
+            if not queued:
+                self.reserve_results[team_id] = [result]
+            if result.get("success"):
+                team = await db_session.get(Team, team_id)
+                if team:
+                    team.current_members += 1
+                    if team.current_members >= team.max_members:
+                        team.status = "full"
+                result = {**result, "team": team}
+            return result
+
+        team = await db_session.get(Team, team_id)
+        if not team or team.pool_type != pool_type or team.status != "active":
+            return {"success": False, "error": f"目标 Team {team_id} 不可用"}
+        if team.current_members >= team.max_members:
+            team.status = "full"
+            return {"success": False, "error": "该 Team 已满, 请选择其他 Team 尝试"}
+
+        team.current_members += 1
+        if team.current_members >= team.max_members:
+            team.status = "full"
+        return {"success": True, "team": team, "error": None}
+
+    async def release_reserved_seat(self, team_id, db_session, pool_type="normal"):
+        self.released_team_ids.append(team_id)
+        team = await db_session.get(Team, team_id)
+        if team and team.current_members > 0:
+            team.current_members -= 1
+            if team.current_members >= team.max_members:
+                team.status = "full"
+            else:
+                team.status = "active"
 
     async def ensure_access_token(self, team, db_session):
         return "token"
@@ -86,6 +128,7 @@ class RedeemFlowServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await conn.execute(__import__("sqlalchemy").text("PRAGMA foreign_keys=ON"))
 
     async def asyncTearDown(self):
         await self.engine.dispose()
@@ -234,6 +277,133 @@ class RedeemFlowServiceTests(unittest.IsolatedAsyncioTestCase):
             ).scalar_one()
             self.assertEqual(mapping.status, "joined")
             self.assertEqual(mapping.missing_sync_count, 0)
+
+
+    async def test_virtual_welfare_code_creates_shadow_code_for_redemption_record(self):
+        async with self.session_factory() as session:
+            team = Team(
+                id=10,
+                email="welfare-owner@example.com",
+                access_token_encrypted="token-10",
+                account_id="acct-welfare",
+                team_name="Welfare Team",
+                current_members=1,
+                max_members=6,
+                status="active",
+                pool_type="welfare",
+            )
+            session.add(team)
+            await session.commit()
+
+            service = RedeemFlowService()
+            shadow = await service.redemption_service.ensure_virtual_welfare_shadow_code(session, "WELF-TEST-CODE")
+            await session.commit()
+
+            self.assertIsNotNone(shadow)
+            self.assertEqual(shadow.code, "WELF-TEST-CODE")
+            self.assertEqual(shadow.pool_type, "welfare")
+            self.assertTrue(shadow.reusable_by_seat)
+
+            record = RedemptionRecord(
+                email="user@example.com",
+                code="WELF-TEST-CODE",
+                team_id=10,
+                account_id="acct-welfare",
+            )
+            session.add(record)
+            await session.commit()
+
+            stored_record = (await session.execute(select(RedemptionRecord).where(RedemptionRecord.code == "WELF-TEST-CODE"))).scalar_one()
+            self.assertEqual(stored_record.team_id, 10)
+
+
+    async def test_delete_used_normal_code_with_history_is_blocked(self):
+        async with self.session_factory() as session:
+            team = Team(
+                id=20,
+                email="normal-owner@example.com",
+                access_token_encrypted="token-20",
+                account_id="acct-normal",
+                team_name="Normal Team",
+                current_members=2,
+                max_members=6,
+                status="active",
+                pool_type="normal",
+            )
+            code = RedemptionCode(
+                code="NORMAL-CODE-DELETE",
+                status="used",
+                used_by_email="user@example.com",
+                used_team_id=20,
+                pool_type="normal",
+            )
+            session.add(team)
+            await session.commit()
+
+            session.add(code)
+            await session.commit()
+
+            session.add(
+                RedemptionRecord(
+                    email="user@example.com",
+                    code="NORMAL-CODE-DELETE",
+                    team_id=20,
+                    account_id="acct-normal",
+                )
+            )
+            await session.commit()
+
+            service = RedemptionService()
+            result = await service.delete_code("NORMAL-CODE-DELETE", session)
+
+            self.assertFalse(result["success"])
+            self.assertIn("无法直接删除", result["error"])
+
+            remaining_code = (
+                await session.execute(
+                    select(RedemptionCode).where(RedemptionCode.code == "NORMAL-CODE-DELETE")
+                )
+            ).scalar_one_or_none()
+            self.assertIsNotNone(remaining_code)
+
+    async def test_atomic_seat_reservation_prevents_over_allocation(self):
+        async with self.session_factory() as session:
+            team = Team(
+                id=30,
+                email="capacity-owner@example.com",
+                access_token_encrypted="token-30",
+                account_id="acct-capacity",
+                team_name="Capacity Team",
+                current_members=5,
+                max_members=6,
+                status="active",
+                pool_type="normal",
+            )
+            session.add(team)
+            await session.commit()
+
+        async with self.session_factory() as session_one, self.session_factory() as session_two:
+            team_service = TeamService()
+            reserve_one, reserve_two = await asyncio.gather(
+                team_service.reserve_seat_if_available(30, session_one, pool_type="normal"),
+                team_service.reserve_seat_if_available(30, session_two, pool_type="normal"),
+            )
+
+            successes = [result for result in (reserve_one, reserve_two) if result["success"]]
+            failures = [result for result in (reserve_one, reserve_two) if not result["success"]]
+
+            self.assertEqual(len(successes), 1)
+            self.assertEqual(len(failures), 1)
+            self.assertIn("已满", failures[0]["error"])
+
+            await session_one.commit()
+            await session_two.rollback()
+
+        async with self.session_factory() as verify_session:
+            stored_team = await verify_session.get(Team, 30)
+            self.assertIsNotNone(stored_team)
+            self.assertEqual(stored_team.current_members, 6)
+            self.assertEqual(stored_team.status, "full")
 
     async def test_locked_team_returns_conflict_without_consuming_code(self):
         await self._seed_basic_data()

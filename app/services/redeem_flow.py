@@ -289,23 +289,16 @@ class RedeemFlowService:
                                             await db_session.rollback()
                                             return {"success": False, "error": f"兑换码状态无效: {rc.status}"}
 
-                            # 2. 锁定并校验 Team
-                            stmt = select(Team).where(Team.id == team_id_final, Team.pool_type == pool_type).with_for_update()
-                            res = await db_session.execute(stmt)
-                            target_team = res.scalar_one_or_none()
-
-                            if not target_team or target_team.status != "active":
-                                raise Exception(f"目标 Team {team_id_final} 不可用 ({target_team.status if target_team else 'None'})")
-
-                            if target_team.current_members >= target_team.max_members:
-                                target_team.status = "full"
-                                raise Exception("该 Team 已满, 请选择其他 Team 尝试")
-
-                            # 预留一个席位，避免并发兑换把同一辆车超卖到 max_members 以上
-                            target_team.current_members += 1
+                            # 2. 以数据库原子更新的方式预留席位，避免多实例并发时超拉
+                            reserve_result = await self.team_service.reserve_seat_if_available(
+                                team_id=team_id_final,
+                                db_session=db_session,
+                                pool_type=pool_type,
+                            )
+                            if not reserve_result["success"]:
+                                raise Exception(reserve_result["error"])
+                            target_team = reserve_result["team"]
                             seat_reserved = True
-                            if target_team.current_members >= target_team.max_members:
-                                target_team.status = "full"
 
                             # 提取必要信息后立即提交，释放 DB 锁以进行耗时的 API 调用
                             account_id_to_use = target_team.account_id
@@ -487,6 +480,9 @@ class RedeemFlowService:
                                 # 同步更新缓存，避免下一次校验读取到旧值
                                 settings_service._cache["welfare_common_code_used_count"] = used_setting.value
 
+                            if is_virtual_welfare_code:
+                                await self.redemption_service.ensure_virtual_welfare_shadow_code(db_session, code)
+
                             record = RedemptionRecord(
                                 email=email,
                                 code=code,
@@ -544,18 +540,13 @@ class RedeemFlowService:
                             if db_session.in_transaction():
                                 await db_session.rollback()
                             await db_session.begin()
-                            res = await db_session.execute(
-                                select(Team).where(Team.id == team_id_final).with_for_update()
-                            )
-                            reserved_team = res.scalar_one_or_none()
-                            if reserved_team and reserved_team.current_members > 0:
-                                reserved_team.current_members -= 1
-                                if reserved_team.current_members >= reserved_team.max_members:
-                                    reserved_team.status = "full"
-                                elif reserved_team.expires_at and reserved_team.expires_at < get_now():
-                                    reserved_team.status = "expired"
-                                else:
-                                    reserved_team.status = "active"
+                            reserved_team = await db_session.get(Team, team_id_final)
+                            if reserved_team:
+                                await self.team_service.release_reserved_seat(
+                                    team_id=team_id_final,
+                                    db_session=db_session,
+                                    pool_type=reserved_team.pool_type or "normal",
+                                )
                                 await db_session.commit()
                             else:
                                 await db_session.rollback()

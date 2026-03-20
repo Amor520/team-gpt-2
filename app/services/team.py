@@ -8,7 +8,7 @@ import asyncio
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 import pytz
-from sqlalchemy import select, update, delete, func, or_
+from sqlalchemy import select, update, delete, func, or_, case
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -59,6 +59,82 @@ class TeamService:
         except Exception as e:
             logger.warning(f"解析过期时间失败: {e}")
             return None
+
+    async def reserve_seat_if_available(
+        self,
+        team_id: int,
+        db_session: AsyncSession,
+        pool_type: str = "normal"
+    ) -> Dict[str, Any]:
+        """
+        以数据库原子更新的方式预留一个席位。
+
+        这样即使在多 worker / 多实例环境中，也不会仅依赖进程内锁导致超拉。
+        """
+        current_time = get_now()
+        reserve_stmt = (
+            update(Team)
+            .where(
+                Team.id == team_id,
+                Team.pool_type == pool_type,
+                Team.status == "active",
+                Team.current_members < Team.max_members,
+                or_(Team.expires_at.is_(None), Team.expires_at >= current_time),
+            )
+            .values(
+                current_members=Team.current_members + 1,
+                status=case(
+                    (Team.current_members + 1 >= Team.max_members, "full"),
+                    else_="active",
+                ),
+            )
+        )
+        reserve_result = await db_session.execute(reserve_stmt)
+        if (reserve_result.rowcount or 0) <= 0:
+            team = await db_session.get(Team, team_id)
+            if not team:
+                return {"success": False, "error": f"目标 Team {team_id} 不存在"}
+            if team.pool_type != pool_type:
+                return {"success": False, "error": f"目标 Team {team_id} 不属于当前兑换池"}
+            if team.expires_at and team.expires_at < current_time:
+                team.status = "expired"
+                await db_session.flush()
+                return {"success": False, "error": f"目标 Team {team_id} 已过期"}
+            if team.current_members >= team.max_members:
+                team.status = "full"
+                await db_session.flush()
+                return {"success": False, "error": "该 Team 已满, 请选择其他 Team 尝试"}
+            return {
+                "success": False,
+                "error": f"目标 Team {team_id} 不可用 ({team.status})"
+            }
+
+        team = await db_session.get(Team, team_id)
+        if not team:
+            return {"success": False, "error": f"目标 Team {team_id} 不存在"}
+
+        return {"success": True, "team": team, "error": None}
+
+    async def release_reserved_seat(
+        self,
+        team_id: int,
+        db_session: AsyncSession,
+        pool_type: str = "normal"
+    ) -> None:
+        """释放一次已预留的席位，并回写 Team 状态。"""
+        team = await db_session.get(Team, team_id)
+        if not team or team.pool_type != pool_type:
+            return
+
+        if team.current_members > 0:
+            team.current_members -= 1
+
+        if team.current_members >= team.max_members:
+            team.status = "full"
+        elif team.expires_at and team.expires_at < get_now():
+            team.status = "expired"
+        else:
+            team.status = "active"
 
     async def _handle_api_error(self, result: Dict[str, Any], team: Team, db_session: AsyncSession) -> bool:
         """
