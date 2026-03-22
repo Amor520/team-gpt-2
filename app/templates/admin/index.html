@@ -1046,10 +1046,9 @@
         if (!menu || !menu.classList.contains('dropdown-menu-floating')) return;
 
         const wrapper = menu.closest('.dropdown-wrapper');
-        const toggleButton = wrapper ? wrapper.querySelector('.dropdown-toggle') : null;
-        if (!toggleButton) return;
+        if (!wrapper) return;
 
-        const buttonRect = toggleButton.getBoundingClientRect();
+        const wrapperRect = wrapper.getBoundingClientRect();
         const viewportPadding = 16;
         const menuWidth = Math.min(260, window.innerWidth - viewportPadding * 2);
         const left = Math.min(
@@ -1062,7 +1061,20 @@
         menu.style.left = `${left}px`;
         menu.style.right = 'auto';
         menu.style.width = `${menuWidth}px`;
-        menu.style.maxWidth = `${window.innerWidth - viewportPadding * 2}px`;
+        menu.style.maxWidth = `min(${menuWidth}px, calc(100vw - 2rem))`;
+    }
+
+    function setDropdownSectionState(menu, isOpen) {
+        const section = menu ? menu.closest('.content-section') : null;
+        if (!section) return;
+        section.classList.toggle('dropdown-open', isOpen);
+    }
+
+    function closeAllDropdowns() {
+        document.querySelectorAll('.dropdown-menu.show').forEach(menu => {
+            menu.classList.remove('show');
+            setDropdownSectionState(menu, false);
+        });
     }
 
     function closeAllDropdowns() {
@@ -1081,6 +1093,7 @@
         if (shouldShow) {
             positionFloatingDropdown(el);
             el.classList.add('show');
+            setDropdownSectionState(el, true);
         }
     }
 
