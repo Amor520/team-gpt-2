@@ -125,14 +125,14 @@
     }
 
     .team-toolbar .dropdown-menu-floating {
-        position: fixed;
+        position: fixed !important;
         top: 0;
         left: 0;
         right: auto;
         width: 260px;
         max-width: calc(100vw - 2rem);
         margin-top: 0;
-        z-index: 9999;
+        z-index: 9999 !important;
     }
 
     @media (max-width: 1240px) {
@@ -1060,13 +1060,14 @@
         if (left + menuWidth + viewportPadding > window.innerWidth) {
             left = window.innerWidth - menuWidth - viewportPadding;
         }
+        left = Math.max(viewportPadding, left);
 
         menu.style.position = 'fixed';
         menu.style.top = `${wrapperRect.bottom + 8}px`;
-        menu.style.left = `${Math.max(viewportPadding, left)}px`;
+        menu.style.left = `${left}px`;
         menu.style.right = 'auto';
         menu.style.width = `${menuWidth}px`;
-        menu.style.maxWidth = `${menuWidth}px`;
+        menu.style.maxWidth = 'calc(100vw - 2rem)';
         menu.style.zIndex = '9999';
     }
 
