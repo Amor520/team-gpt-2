@@ -491,8 +491,8 @@
         right: auto;
         bottom: auto;
         transform: translate(-50%, -50%);
-        width: fit-content;
-        max-width: min(620px, calc(100vw - 300px));
+        width: min(760px, calc(100vw - 300px));
+        max-width: min(760px, calc(100vw - 300px));
         padding: 0.625rem 0.875rem;
         background: color-mix(in srgb, var(--bg-surface) 94%, #0f172a 6%);
         box-shadow: 0 12px 30px rgba(15, 23, 42, 0.2);
@@ -500,6 +500,9 @@
         border-radius: var(--radius-lg);
         backdrop-filter: blur(10px);
         z-index: 1100;
+        animation: none;
+        justify-content: space-between;
+        gap: 1rem;
     }
 
     @keyframes slideUp {
@@ -517,11 +520,13 @@
     .bulk-info {
         font-weight: 500;
         color: var(--text-color);
+        white-space: nowrap;
     }
 
     .bulk-actions {
         display: flex;
         gap: 0.5rem;
+        flex-wrap: nowrap;
     }
 
     .invalid-cleanup-bar {
