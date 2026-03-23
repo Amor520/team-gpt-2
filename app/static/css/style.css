@@ -1948,3 +1948,62 @@ body.admin-theme.theme-warm .dropdown-menu,
 html.theme-warm body.admin-theme .dropdown-menu {
     box-shadow: 0 6px 28px rgba(45, 37, 25, 0.08);
 }
+
+/* Desktop admin shell: keep top/left/bottom fixed, only right panel scrolls */
+@media (min-width: 769px) {
+    body.admin-theme {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        overflow: hidden;
+    }
+
+    body.admin-theme .navbar {
+        flex-shrink: 0;
+    }
+
+    body.admin-theme .main-container {
+        flex: 1 1 auto;
+        min-height: 0;
+        width: 100%;
+        max-width: 1440px;
+        margin: 0 auto;
+        display: flex;
+        align-items: stretch;
+        flex-wrap: nowrap;
+        overflow: hidden;
+    }
+
+    body.admin-theme .sidebar {
+        position: relative;
+        top: auto;
+        align-self: stretch;
+        min-height: 0;
+        height: auto;
+        overflow-y: auto;
+    }
+
+    body.admin-theme .main-content {
+        flex: 1 1 auto;
+        min-width: 0;
+        min-height: 0;
+        height: 100%;
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding: 1.25rem 2rem;
+    }
+
+    body.admin-theme .footer {
+        flex-shrink: 0;
+        padding: 0.75rem 1rem;
+    }
+
+    body.admin-theme .stats-container {
+        margin-bottom: 1.25rem;
+        gap: 1rem;
+    }
+
+    body.admin-theme .content-section {
+        margin-bottom: 1.25rem;
+    }
+}
