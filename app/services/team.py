@@ -1679,7 +1679,33 @@ class TeamService:
                         if normalized_email:
                             joined_member_emails.add(normalized_email)
                             all_member_emails.add(normalized_email)
-            
+            else:
+                # 检查是否封号或 Token 失效
+                if await self._handle_api_error(members_result, team, db_session):
+                    error_msg = members_result.get("error", "未知错误")
+                    if members_result.get("error_code") == "account_deactivated":
+                        error_msg = "账号已封禁 (account_deactivated)"
+                    elif members_result.get("error_code") == "token_invalidated":
+                        error_msg = "账号已封禁/失效 (token_invalidated)"
+
+                    return {
+                        "success": False,
+                        "message": None,
+                        "error": error_msg
+                    }
+
+                # 其他错误, 累加错误次数
+                team.error_count = (team.error_count or 0) + 1
+                if team.error_count >= 3:
+                    logger.error(f"Team {team.id} 获取成员列表连续失败 {team.error_count} 次，更新状态为 error")
+                    team.status = "error"
+                await db_session.commit()
+                return {
+                    "success": False,
+                    "message": None,
+                    "error": f"获取成员列表失败: {members_result.get('error', '未知错误')} (错误次数: {team.error_count})"
+                }
+
             if invites_result["success"]:
                 current_members += invites_result["total"]
                 for inv in invites_result.get("items", []):
@@ -1696,23 +1722,23 @@ class TeamService:
                         error_msg = "账号已封禁 (account_deactivated)"
                     elif invites_result.get("error_code") == "token_invalidated":
                         error_msg = "账号已封禁/失效 (token_invalidated)"
-                        
+
                     return {
                         "success": False,
                         "message": None,
                         "error": error_msg
                     }
-                
+
                 # 其他错误, 累加错误次数
                 team.error_count = (team.error_count or 0) + 1
                 if team.error_count >= 3:
-                    logger.error(f"Team {team.id} 获取成员列表连续失败 {team.error_count} 次，更新状态为 error")
+                    logger.error(f"Team {team.id} 获取邀请列表连续失败 {team.error_count} 次，更新状态为 error")
                     team.status = "error"
                 await db_session.commit()
                 return {
                     "success": False,
                     "message": None,
-                    "error": f"获取成员列表失败: {members_result['error']} (错误次数: {team.error_count})"
+                    "error": f"获取邀请列表失败: {invites_result.get('error', '未知错误')} (错误次数: {team.error_count})"
                 }
 
             # 6. 解析过期时间
