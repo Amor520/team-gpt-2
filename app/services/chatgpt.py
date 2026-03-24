@@ -8,7 +8,7 @@ import hashlib
 import logging
 import random
 import secrets
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from typing import Optional, Dict, Any, List
 from curl_cffi.requests import AsyncSession
 from app.services.settings import settings_service
@@ -48,10 +48,39 @@ class ChatGPTService:
         创建 HTTP 会话
         """
         proxy = await self._get_proxy_config(db_session)
+
+        proxies = None
+        if proxy:
+            normalized_proxy = proxy.strip()
+            # curl_cffi/curl 对 socks5h 兼容性不稳定，统一转为 socks5
+            if normalized_proxy.startswith("socks5h://"):
+                normalized_proxy = "socks5://" + normalized_proxy[len("socks5h://"):]
+            proxies = {
+                "all": normalized_proxy,
+                "http": normalized_proxy,
+                "https": normalized_proxy,
+            }
+
+            try:
+                parsed_proxy = urlparse(normalized_proxy)
+                proxy_scheme = parsed_proxy.scheme or "unknown"
+                proxy_host = parsed_proxy.hostname or ""
+                proxy_port = parsed_proxy.port
+                logger.info(
+                    "创建 ChatGPT 会话代理: scheme=%s host=%s port=%s via=all/http/https",
+                    proxy_scheme,
+                    proxy_host,
+                    proxy_port,
+                )
+            except Exception:
+                logger.info("创建 ChatGPT 会话代理: %s", normalized_proxy)
+        else:
+            logger.info("创建 ChatGPT 会话代理: disabled")
+
         # 使用 chrome110 指纹，这是 curl_cffi 中绕过 CF 最稳定的版本之一
         session = AsyncSession(
             impersonate="chrome110",
-            proxies={"http": proxy, "https": proxy} if proxy else None,
+            proxies=proxies,
             timeout=30,
             verify=False # 某些代理环境下需要，或根据需求开启
         )
