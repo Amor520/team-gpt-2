@@ -1652,19 +1652,26 @@ class TeamService:
                     "error": "该 Token 没有关联任何 Team 账户"
                 }
 
-            # 5. 获取成员列表 (包含已加入和待加入)
-            members_result = await self.chatgpt_service.get_members(
-                access_token,
-                current_account["account_id"],
-                db_session,
-                identifier=team.email
-            )
-            
-            invites_result = await self.chatgpt_service.get_invites(
-                access_token,
-                current_account["account_id"],
-                db_session,
-                identifier=team.email
+            # 5. 小并发获取只读信息 (成员、邀请、账户设置)
+            members_result, invites_result, settings_result = await asyncio.gather(
+                self.chatgpt_service.get_members(
+                    access_token,
+                    current_account["account_id"],
+                    db_session,
+                    identifier=team.email
+                ),
+                self.chatgpt_service.get_invites(
+                    access_token,
+                    current_account["account_id"],
+                    db_session,
+                    identifier=team.email
+                ),
+                self.chatgpt_service.get_account_settings(
+                    access_token,
+                    current_account["account_id"],
+                    db_session,
+                    identifier=team.email
+                ),
             )
 
             joined_member_emails = set()
@@ -1744,13 +1751,7 @@ class TeamService:
             # 6. 解析过期时间
             expires_at = self._parse_remote_expires_at(current_account.get("expires_at"))
 
-            # 7.5 获取账户设置 (包含 beta_settings)
-            settings_result = await self.chatgpt_service.get_account_settings(
-                access_token,
-                current_account["account_id"],
-                db_session,
-                identifier=team.email
-            )
+            # 7.5 使用并发请求返回的账户设置 (包含 beta_settings)
             device_code_auth_enabled = team.device_code_auth_enabled
             if settings_result["success"]:
                 beta_settings = settings_result["data"].get("beta_settings", {})
