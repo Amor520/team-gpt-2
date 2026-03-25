@@ -106,6 +106,324 @@ function renderMarkdownSafe(markdownText) {
     return html || '<p>暂无公告内容</p>';
 }
 
+function extractErrorText(payload) {
+    if (payload === null || payload === undefined) return '';
+    if (typeof payload === 'string') return payload;
+
+    if (Array.isArray(payload)) {
+        return payload
+            .map(item => {
+                if (!item) return '';
+                if (typeof item === 'string') return item;
+                if (item.msg) return String(item.msg);
+                if (item.detail !== undefined) return extractErrorText(item.detail);
+                try {
+                    return JSON.stringify(item);
+                } catch (_) {
+                    return String(item);
+                }
+            })
+            .filter(Boolean)
+            .join('；');
+    }
+
+    if (typeof payload === 'object') {
+        if (payload.detail !== undefined) return extractErrorText(payload.detail);
+        if (payload.error !== undefined) return extractErrorText(payload.error);
+        if (payload.message !== undefined) return extractErrorText(payload.message);
+        if (payload.msg !== undefined) return extractErrorText(payload.msg);
+        if (payload.reason !== undefined) return extractErrorText(payload.reason);
+        try {
+            return JSON.stringify(payload);
+        } catch (_) {
+            return String(payload);
+        }
+    }
+
+    return String(payload);
+}
+
+function normalizeRawErrorMessage(rawMessage) {
+    let message = extractErrorText(rawMessage).trim();
+    if (!message) return '';
+
+    for (let i = 0; i < 2; i++) {
+        const trimmed = message.trim();
+        if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) break;
+
+        try {
+            const parsed = JSON.parse(trimmed);
+            const extracted = extractErrorText(parsed).trim();
+            if (!extracted || extracted === trimmed) break;
+            message = extracted;
+        } catch (_) {
+            break;
+        }
+    }
+
+    return message.replace(/\s+/g, ' ').trim();
+}
+
+function isTechnicalLogMessage(message) {
+    const normalized = String(message || '').trim();
+    if (!normalized) return false;
+
+    const lower = normalized.toLowerCase();
+    if (normalized.length > 220) return true;
+
+    const technicalKeywords = [
+        'traceback',
+        'exception',
+        'stack',
+        'sqlalchemy',
+        'asyncsession',
+        'httpx',
+        'aiohttp',
+        'error_code',
+        'status_code',
+        'file "',
+        'line ',
+        'detail:',
+        'db_session',
+        'invite_res',
+        'redeem_flow'
+    ];
+
+    return technicalKeywords.some(keyword => lower.includes(keyword));
+}
+
+function getFriendlyRedeemErrorMessage(rawMessage, statusCode = 0) {
+    const message = normalizeRawErrorMessage(rawMessage);
+    const lower = message.toLowerCase();
+    const includesAny = (...keywords) => keywords.some(keyword => lower.includes(String(keyword).toLowerCase()));
+
+    if (includesAny('兑换失败次数过多')) {
+        const marker = '最后报错:';
+        const index = message.lastIndexOf(marker);
+        if (index !== -1) {
+            const lastError = message.slice(index + marker.length).trim();
+            if (lastError && lastError !== message) {
+                return getFriendlyRedeemErrorMessage(lastError, statusCode);
+            }
+        }
+        return '请求重试次数过多，请稍后再试';
+    }
+
+    if (
+        includesAny('value is not a valid email', 'invalid email', '邮箱格式', 'email address is not valid') ||
+        (includesAny('field required', 'missing') && includesAny('email'))
+    ) {
+        return '邮箱格式不正确，请检查后重试';
+    }
+
+    if (includesAny('field required', 'missing') && includesAny('code', '兑换码')) {
+        return '兑换码不能为空，请重新输入';
+    }
+
+    if (includesAny('兑换码不存在', 'invalid code', 'code not found', 'invalid redemption code')) {
+        return '兑换码不存在或输入有误，请检查后重试';
+    }
+
+    if (includesAny('兑换码已被使用', '兑换码已使用', 'already used')) {
+        return '该兑换码已使用，不能重复兑换';
+    }
+
+    if (includesAny('质保已过期')) {
+        return '该兑换码质保已过期，无法再次兑换';
+    }
+
+    if (includesAny('兑换码已过期', '超过首次兑换截止时间', 'expired')) {
+        return '兑换码已过期，请联系管理员更换新码';
+    }
+
+    if (includesAny('次数已用完', 'limit reached', 'no remaining')) {
+        return '该兑换码可用次数已用完，请联系管理员';
+    }
+
+    if (includesAny('兑换码已失效', '最新福利通用兑换码')) {
+        return '该兑换码已失效，请使用最新兑换码';
+    }
+
+    if (includesAny('已在 team', 'already in workspace', 'already in team', 'already a member')) {
+        return '该邮箱已在所选 Team 中，当前兑换码不会被消耗，请改选其他 Team';
+    }
+
+    if (includesAny('已加入所有可用 team', '没有新的可用 team')) {
+        return '您已加入当前所有可用 Team，当前兑换码不会被消耗';
+    }
+
+    if (includesAny('没有可用的 team')) {
+        return '当前没有可用 Team 席位，请稍后重试';
+    }
+
+    if (includesAny('席位已满', 'maximum number of seats', 'no seats', 'team 已满', 'team已满', '请选择其他 team', ' full')) {
+        return '所选 Team 席位已满，请选择其他 Team 重试';
+    }
+
+    if (includesAny('账号受限', '风控', '账单', 'billing', 'restricted', 'blocked')) {
+        return '目标 Team 当前状态异常（可能账单或风控限制），请联系管理员处理';
+    }
+
+    if (
+        includesAny('token', 'access token', 'session token') &&
+        includesAny('过期', '失效', 'invalid', 'expired', 'invalidated')
+    ) {
+        return 'Team 登录状态已失效，请联系管理员刷新 Token 后重试';
+    }
+
+    if (includesAny('获取 team 访问权限失败')) {
+        return '无法获取 Team 访问权限，请稍后重试或联系管理员';
+    }
+
+    if (includesAny('服务器响应格式错误', 'cannot parse', 'json')) {
+        return '服务器返回异常，请稍后重试';
+    }
+
+    if (includesAny('proxy', 'connection', 'timeout', 'timed out', 'network', '连接', 'dns', 'ssl', 'socket')) {
+        return '网络连接异常，请稍后重试';
+    }
+
+    if (statusCode === 409) {
+        return 'Team 状态发生变化（如席位已满），请重试或选择其他 Team';
+    }
+
+    if (statusCode >= 500) {
+        return '服务器繁忙，请稍后重试';
+    }
+
+    if (!message) {
+        return statusCode >= 500 ? '服务器繁忙，请稍后重试' : '兑换失败，请稍后重试';
+    }
+
+    if (isTechnicalLogMessage(message)) {
+        return statusCode >= 500 ? '服务器繁忙，请稍后重试' : '请求处理失败，请稍后重试或联系管理员';
+    }
+
+    return message;
+}
+
+function getFriendlyWarrantyErrorMessage(rawMessage, statusCode = 0) {
+    const message = normalizeRawErrorMessage(rawMessage);
+    const lower = message.toLowerCase();
+    const includesAny = (...keywords) => keywords.some(keyword => lower.includes(String(keyword).toLowerCase()));
+
+    if (includesAny('必须提供邮箱或兑换码')) {
+        return '请输入兑换码或邮箱后再查询';
+    }
+
+    if (includesAny('查询太频繁')) {
+        const waitMatch = message.match(/(\d+)\s*秒/);
+        if (waitMatch) {
+            return `查询过于频繁，请 ${waitMatch[1]} 秒后再试`;
+        }
+        return '查询过于频繁，请稍后再试';
+    }
+
+    if (includesAny('未登录', 'api key 无效', 'unauthorized', 'forbidden')) {
+        return '登录状态已失效，请刷新页面后重试';
+    }
+
+    if (includesAny('兑换码不存在')) {
+        return '未找到该兑换码，请检查输入是否正确';
+    }
+
+    if (includesAny('未找到兑换记录', '未找到相关记录')) {
+        return '未找到相关记录，请确认邮箱或兑换码是否正确';
+    }
+
+    if (includesAny('质保已过期')) {
+        return '该兑换码质保已过期';
+    }
+
+    if (includesAny('服务器响应格式错误', 'cannot parse', 'json')) {
+        return '服务器返回异常，请稍后重试';
+    }
+
+    if (includesAny('proxy', 'connection', 'timeout', 'timed out', 'network', '连接', 'dns', 'ssl', 'socket')) {
+        return '网络连接异常，请稍后重试';
+    }
+
+    if (statusCode === 429) {
+        return '查询过于频繁，请稍后再试';
+    }
+
+    if (statusCode === 401 || statusCode === 403) {
+        return '登录状态已失效，请刷新页面后重试';
+    }
+
+    if (statusCode >= 500) {
+        return '系统繁忙，请稍后重试';
+    }
+
+    if (!message) {
+        return '查询失败，请稍后重试';
+    }
+
+    if (isTechnicalLogMessage(message)) {
+        return statusCode >= 500 ? '系统繁忙，请稍后重试' : '查询失败，请稍后重试';
+    }
+
+    return message;
+}
+
+function getFriendlyDeviceAuthErrorMessage(rawMessage, statusCode = 0) {
+    const message = normalizeRawErrorMessage(rawMessage);
+    const lower = message.toLowerCase();
+    const includesAny = (...keywords) => keywords.some(keyword => lower.includes(String(keyword).toLowerCase()));
+
+    if (includesAny('开启设备身份验证失败:')) {
+        const marker = '开启设备身份验证失败:';
+        const index = message.lastIndexOf(marker);
+        if (index !== -1) {
+            const innerMessage = message.slice(index + marker.length).trim();
+            if (innerMessage && innerMessage !== message) {
+                return getFriendlyDeviceAuthErrorMessage(innerMessage, statusCode);
+            }
+        }
+    }
+
+    if (includesAny('未登录', 'api key 无效', 'unauthorized', 'forbidden')) {
+        return '登录状态已失效，请先登录管理员后重试';
+    }
+
+    if (includesAny('team id', 'team 不存在', '目标 team', 'not found')) {
+        return '目标 Team 不存在或已失效，请刷新后重试';
+    }
+
+    if (
+        includesAny('token', 'access token', 'session token') &&
+        includesAny('过期', '失效', 'invalid', 'expired', 'invalidated')
+    ) {
+        return 'Team 登录状态已失效，请先在后台刷新 Token';
+    }
+
+    if (includesAny('服务器响应格式错误', 'cannot parse', 'json')) {
+        return '服务器返回异常，请稍后重试';
+    }
+
+    if (includesAny('proxy', 'connection', 'timeout', 'timed out', 'network', '连接', 'dns', 'ssl', 'socket')) {
+        return '网络连接异常，请稍后重试';
+    }
+
+    if (statusCode === 401 || statusCode === 403) {
+        return '登录状态已失效，请先登录管理员后重试';
+    }
+
+    if (statusCode >= 500) {
+        return '开启失败，请稍后重试';
+    }
+
+    if (!message) {
+        return statusCode >= 500 ? '开启失败，请稍后重试' : '开启失败，请重试';
+    }
+
+    if (isTechnicalLogMessage(message)) {
+        return statusCode >= 500 ? '开启失败，请稍后重试' : '开启失败，请重试';
+    }
+
+    return message;
+}
+
 function initAnnouncementModal() {
     const announcement = window.REDEEM_ANNOUNCEMENT || {};
     if (!announcement.enabled || !announcement.markdown || !String(announcement.markdown).trim()) {
@@ -326,27 +644,14 @@ async function confirmRedeem(teamId) {
             // 兑换失败
             console.warn('Redemption failed:', data);
 
-            // Extract error message safely
-            let errorMessage = '兑换失败';
-
-            if (data.detail) {
-                if (typeof data.detail === 'string') {
-                    errorMessage = data.detail;
-                } else if (Array.isArray(data.detail)) {
-                    // Handle FastAPI validation errors (array of objects)
-                    errorMessage = data.detail.map(err => err.msg || JSON.stringify(err)).join('; ');
-                } else {
-                    errorMessage = JSON.stringify(data.detail);
-                }
-            } else if (data.error) {
-                errorMessage = data.error;
-            }
-
+            const rawError = (data && (data.detail ?? data.error ?? data.message ?? data.reason)) || text;
+            const errorMessage = getFriendlyRedeemErrorMessage(rawError, response.status);
             showErrorResult(errorMessage);
         }
     } catch (error) {
         console.error('Network or logic error:', error);
-        showErrorResult(error.message || '网络错误,请稍后重试');
+        const errorMessage = getFriendlyRedeemErrorMessage(error?.message || '');
+        showErrorResult(errorMessage || '网络错误，请稍后重试');
     }
 }
 
@@ -492,10 +797,13 @@ async function checkWarranty() {
         if (response.ok && data.success) {
             showWarrantyResult(data);
         } else {
-            showToast(data.error || data.detail || '查询失败', 'error');
+            const rawError = data?.error ?? data?.detail ?? data?.message ?? data?.reason;
+            const errorMessage = getFriendlyWarrantyErrorMessage(rawError, response.status);
+            showToast(errorMessage, 'error');
         }
     } catch (error) {
-        showToast('网络错误，请稍后重试', 'error');
+        const errorMessage = getFriendlyWarrantyErrorMessage(error?.message || '');
+        showToast(errorMessage || '网络错误，请稍后重试', 'error');
     } finally {
         checkBtn.disabled = false;
         checkBtn.innerHTML = '<i data-lucide="search"></i> 查询质保状态';
@@ -791,13 +1099,16 @@ async function enableUserDeviceAuth(teamId, code, email, btn) {
             // 刷新当前状态
             checkWarranty();
         } else {
-            showToast(data.error || data.detail || '开启失败', 'error');
+            const rawError = data?.error ?? data?.detail ?? data?.message ?? data?.reason;
+            const errorMessage = getFriendlyDeviceAuthErrorMessage(rawError, response.status);
+            showToast(errorMessage, 'error');
             btn.disabled = false;
             btn.innerHTML = originalContent;
             if (window.lucide) lucide.createIcons();
         }
     } catch (error) {
-        showToast('网络错误，请稍后重试', 'error');
+        const errorMessage = getFriendlyDeviceAuthErrorMessage(error?.message || '');
+        showToast(errorMessage || '网络错误，请稍后重试', 'error');
         btn.disabled = false;
         btn.innerHTML = originalContent;
         if (window.lucide) lucide.createIcons();

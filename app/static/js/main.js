@@ -17,6 +17,194 @@ function escapeHtml(value) {
         .replace(/'/g, '&#039;');
 }
 
+function extractErrorText(payload) {
+    if (payload === null || payload === undefined) return '';
+    if (typeof payload === 'string') return payload;
+
+    if (Array.isArray(payload)) {
+        return payload
+            .map(item => {
+                if (!item) return '';
+                if (typeof item === 'string') return item;
+                if (item.msg !== undefined) return String(item.msg);
+                if (item.detail !== undefined) return extractErrorText(item.detail);
+                if (item.error !== undefined) return extractErrorText(item.error);
+                try {
+                    return JSON.stringify(item);
+                } catch (_) {
+                    return String(item);
+                }
+            })
+            .filter(Boolean)
+            .join('；');
+    }
+
+    if (typeof payload === 'object') {
+        if (payload.detail !== undefined) return extractErrorText(payload.detail);
+        if (payload.error !== undefined) return extractErrorText(payload.error);
+        if (payload.message !== undefined) return extractErrorText(payload.message);
+        if (payload.msg !== undefined) return extractErrorText(payload.msg);
+        if (payload.reason !== undefined) return extractErrorText(payload.reason);
+        try {
+            return JSON.stringify(payload);
+        } catch (_) {
+            return String(payload);
+        }
+    }
+
+    return String(payload);
+}
+
+function normalizeRawErrorMessage(rawMessage) {
+    let message = extractErrorText(rawMessage).trim();
+    if (!message) return '';
+
+    for (let i = 0; i < 2; i++) {
+        const trimmed = message.trim();
+        if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) break;
+
+        try {
+            const parsed = JSON.parse(trimmed);
+            const extracted = extractErrorText(parsed).trim();
+            if (!extracted || extracted === trimmed) break;
+            message = extracted;
+        } catch (_) {
+            break;
+        }
+    }
+
+    return message.replace(/\s+/g, ' ').trim();
+}
+
+function isTechnicalLogMessage(message) {
+    const normalized = String(message || '').trim();
+    if (!normalized) return false;
+
+    const lower = normalized.toLowerCase();
+    if (normalized.length > 220) return true;
+
+    const technicalKeywords = [
+        'traceback',
+        'exception',
+        'stack',
+        'sqlalchemy',
+        'asyncsession',
+        'httpx',
+        'aiohttp',
+        'error_code',
+        'status_code',
+        'file "',
+        'line ',
+        'detail:',
+        'db_session',
+        'token refresh failed',
+        'validate',
+        'jsondecodeerror'
+    ];
+
+    return technicalKeywords.some(keyword => lower.includes(keyword));
+}
+
+function getFriendlyAdminErrorMessage(rawMessage, statusCode = 0, scene = 'common') {
+    const message = normalizeRawErrorMessage(rawMessage);
+    const lower = message.toLowerCase();
+    const includesAny = (...keywords) => keywords.some(keyword => lower.includes(String(keyword).toLowerCase()));
+
+    if (scene === 'oauth') {
+        if (includesAny('state') && includesAny('mismatch', '不匹配', 'invalid')) {
+            return '授权回调校验失败，请重新生成授权链接后再试';
+        }
+        if (includesAny('code_verifier', 'code verifier', 'pkce')) {
+            return '授权参数校验失败，请重新生成授权链接后再试';
+        }
+    }
+
+    if (scene === 'import') {
+        if (includesAny('json') && includesAny('invalid', '格式', '解析')) {
+            return '导入文件格式不正确，请检查后重试';
+        }
+        if (
+            includesAny('access_token', 'access token', 'refresh_token', 'refresh token', 'id_token', 'id token', 'session_token', 'session token') &&
+            includesAny('invalid', '失效', '过期', '不能为空', 'missing')
+        ) {
+            return '导入的 Token 信息无效，请检查后重试';
+        }
+        if (includesAny('邮箱不匹配', 'email mismatch', 'token 邮箱不匹配')) {
+            return 'Token 与填写邮箱不一致，请核对后重试';
+        }
+    }
+
+    if (scene === 'member') {
+        if (includesAny('owner', '所有者') && includesAny('不可删除', 'cannot', 'forbidden')) {
+            return '所有者账号不支持删除';
+        }
+    }
+
+    if (includesAny('未登录', 'api key 无效', 'unauthorized', 'authentication', 'login required')) {
+        return '登录状态已失效，请重新登录后重试';
+    }
+
+    if (includesAny('forbidden', 'permission denied', '权限不足', '无权限')) {
+        return '您没有该操作权限，请联系管理员';
+    }
+
+    if (includesAny('查询太频繁', 'too many requests', 'rate limit') || statusCode === 429) {
+        const waitMatch = message.match(/(\d+)\s*秒/);
+        if (waitMatch) {
+            return `操作过于频繁，请 ${waitMatch[1]} 秒后再试`;
+        }
+        return '操作过于频繁，请稍后再试';
+    }
+
+    if (
+        includesAny('token', 'access token', 'refresh token', 'id token', 'session token') &&
+        includesAny('invalid', 'expired', 'invalidated', '失效', '过期')
+    ) {
+        return scene === 'oauth' ? 'Token 无效或已过期，请重新授权后再试' : 'Token 无效或已过期，请刷新后重试';
+    }
+
+    if (
+        includesAny('value is not a valid email', 'invalid email', 'email address is not valid', '邮箱格式') ||
+        (includesAny('field required', 'missing') && includesAny('email'))
+    ) {
+        return '邮箱格式不正确，请检查后重试';
+    }
+
+    if (includesAny('team id', 'team 不存在', '目标 team', 'team not found')) {
+        return '目标 Team 不存在或已失效，请刷新后重试';
+    }
+
+    if (includesAny('member not found', '成员不存在', '用户不存在')) {
+        return '成员不存在或已被移除，请刷新后重试';
+    }
+
+    if (includesAny('json') && includesAny('parse', '解析', '格式')) {
+        return '数据格式异常，请检查后重试';
+    }
+
+    if (includesAny('proxy', 'connection', 'timeout', 'timed out', 'network', '连接', 'dns', 'ssl', 'socket')) {
+        return '网络连接异常，请稍后重试';
+    }
+
+    if (statusCode === 401 || statusCode === 403) {
+        return '登录状态已失效，请重新登录后重试';
+    }
+
+    if (statusCode >= 500) {
+        return '系统繁忙，请稍后重试';
+    }
+
+    if (!message) {
+        return statusCode >= 500 ? '系统繁忙，请稍后重试' : '操作失败，请稍后重试';
+    }
+
+    if (isTechnicalLogMessage(message)) {
+        return statusCode >= 500 ? '系统繁忙，请稍后重试' : '操作失败，请稍后重试';
+    }
+
+    return message;
+}
+
 function cleanupLegacyThemeSettingsSection() {
     const legacyLinks = document.querySelectorAll('[data-target="settings-ui-theme"], a[href="#settings-ui-theme"]');
     legacyLinks.forEach((node) => node.remove());
@@ -67,7 +255,7 @@ async function saveSystemTheme(theme) {
 
     const data = await response.json();
     if (!response.ok || !data.success) {
-        throw new Error(data.error || '保存失败');
+        throw new Error(extractErrorText(data.error ?? data.detail ?? data.message ?? data.reason) || '保存失败');
     }
 
     return data.theme || theme;
@@ -114,7 +302,7 @@ async function initThemeSwitcher() {
             updateThemeToggleButton(savedTheme);
             showToast(`已切换为${savedTheme === 'warm' ? '暖色' : '深色'}主题`, 'success');
         } catch (error) {
-            showToast(error.message || '保存失败', 'error');
+            showToast(getFriendlyAdminErrorMessage(error.message || '保存失败', 0, 'settings'), 'error');
         }
     });
 }
@@ -261,7 +449,8 @@ async function apiCall(url, options = {}) {
         const data = await response.json();
 
         if (!response.ok) {
-            throw new Error(data.error || data.detail || '请求失败');
+            const rawError = data?.error ?? data?.detail ?? data?.message ?? data?.reason ?? '请求失败';
+            throw new Error(extractErrorText(rawError) || '请求失败');
         }
 
         return { success: true, data };
@@ -614,7 +803,7 @@ async function generateOAuthAuthorizeLink() {
         });
 
         if (!result.success) {
-            showToast(result.error || '生成授权链接失败', 'error');
+            showToast(getFriendlyAdminErrorMessage(result.error || '生成授权链接失败', 0, 'oauth'), 'error');
             return;
         }
 
@@ -641,7 +830,7 @@ async function generateOAuthAuthorizeLink() {
             showToast('授权链接已生成，请手动复制', 'warning');
         }
     } catch (error) {
-        showToast('生成授权链接失败', 'error');
+        showToast(getFriendlyAdminErrorMessage(error.message || '生成授权链接失败', 0, 'oauth'), 'error');
     }
 }
 
@@ -669,7 +858,7 @@ async function parseOAuthCallbackData(forceRefresh = false) {
     });
 
     if (!result.success) {
-        throw new Error(result.error || '解析回调失败');
+        throw new Error(getFriendlyAdminErrorMessage(result.error || '解析回调失败', 0, 'oauth'));
     }
 
     const parsed = unwrapApiPayload(result) || {};
@@ -767,7 +956,7 @@ async function exportOAuthJsonTemplateFile() {
         downloadJsonFile(payload, filename);
         showToast('JSON 文件已导出', 'success');
     } catch (error) {
-        showToast(error.message || '导出 JSON 失败', 'error');
+        showToast(getFriendlyAdminErrorMessage(error.message || '导出 JSON 失败', 0, 'oauth'), 'error');
     }
 }
 
@@ -786,7 +975,7 @@ async function parseOAuthCallbackAndFill() {
 
         showToast('已自动填充 Token 信息，请确认后导入', 'success');
     } catch (error) {
-        showToast(error.message || '解析回调失败', 'error');
+        showToast(getFriendlyAdminErrorMessage(error.message || '解析回调失败', 0, 'oauth'), 'error');
     }
 }
 
@@ -827,10 +1016,10 @@ async function handleSingleImport(event) {
             form.reset();
             setTimeout(() => location.reload(), 1500);
         } else {
-            showToast(result.error || '导入失败', 'error');
+            showToast(getFriendlyAdminErrorMessage(result.error || '导入失败', 0, 'import'), 'error');
         }
     } catch (error) {
-        showToast('网络错误', 'error');
+        showToast(getFriendlyAdminErrorMessage(error.message || '网络错误', 0, 'import'), 'error');
     } finally {
         submitButton.disabled = false;
         submitButton.textContent = '导入';
@@ -888,15 +1077,17 @@ async function handleBatchImport(event) {
         });
 
         if (!response.ok) {
-            let msg = '请求失败';
-            try {
-                const errorData = await response.json();
-                msg = errorData.error || errorData.detail || msg;
-            } catch (_) {
-                const errorText = await response.text();
-                if (errorText) msg = errorText.slice(0, 200);
+            const rawBody = await response.text();
+            let rawError = '请求失败';
+            if (rawBody) {
+                try {
+                    const errData = JSON.parse(rawBody);
+                    rawError = errData?.error ?? errData?.detail ?? errData?.message ?? errData?.reason ?? rawBody;
+                } catch (_) {
+                    rawError = rawBody;
+                }
             }
-            throw new Error(msg);
+            throw new Error(getFriendlyAdminErrorMessage(rawError, response.status, 'import'));
         }
 
         const reader = response.body.getReader();
@@ -953,7 +1144,7 @@ async function handleBatchImport(event) {
                         setTimeout(() => location.reload(), 3000);
                     }
                 } else if (data.type === 'error') {
-                    showToast(data.error, 'error');
+                    showToast(getFriendlyAdminErrorMessage(data.error || '导入失败', 0, 'import'), 'error');
                 }
             } catch (e) {
                 console.error('解析流数据失败:', e, line);
@@ -979,7 +1170,7 @@ async function handleBatchImport(event) {
             }
         }
     } catch (error) {
-        showToast(error.message || '网络错误', 'error');
+        showToast(getFriendlyAdminErrorMessage(error.message || '网络错误', 0, 'import'), 'error');
     } finally {
         if (shouldResetBatchForm) {
             resetBatchImportForm();
@@ -1050,15 +1241,17 @@ async function handleJsonFileImport() {
         });
 
         if (!response.ok) {
-            let msg = '请求失败';
-            try {
-                const errorData = await response.json();
-                msg = errorData.error || errorData.detail || msg;
-            } catch (_) {
-                const errorText = await response.text();
-                if (errorText) msg = errorText.slice(0, 200);
+            const rawBody = await response.text();
+            let rawError = '请求失败';
+            if (rawBody) {
+                try {
+                    const errData = JSON.parse(rawBody);
+                    rawError = errData?.error ?? errData?.detail ?? errData?.message ?? errData?.reason ?? rawBody;
+                } catch (_) {
+                    rawError = rawBody;
+                }
             }
-            throw new Error(msg);
+            throw new Error(getFriendlyAdminErrorMessage(rawError, response.status, 'import'));
         }
 
         const reader = response.body.getReader();
@@ -1114,7 +1307,7 @@ async function handleJsonFileImport() {
                         setTimeout(() => location.reload(), 3000);
                     }
                 } else if (data.type === 'error') {
-                    showToast(data.error, 'error');
+                    showToast(getFriendlyAdminErrorMessage(data.error || '导入失败', 0, 'import'), 'error');
                 }
             } catch (e) {
                 console.error('解析流数据失败:', e, line);
@@ -1139,7 +1332,7 @@ async function handleJsonFileImport() {
             }
         }
     } catch (error) {
-        showToast(error.message || '网络错误', 'error');
+        showToast(getFriendlyAdminErrorMessage(error.message || '网络错误', 0, 'import'), 'error');
     } finally {
         if (submitButton) {
             submitButton.disabled = false;
@@ -1272,7 +1465,7 @@ async function generateSingle(event) {
             setTimeout(() => location.reload(), 2000);
         }
     } else {
-        showToast(result.error || '生成失败', 'error');
+        showToast(getFriendlyAdminErrorMessage(result.error || '生成失败', 0, 'common'), 'error');
     }
 }
 
@@ -1325,7 +1518,7 @@ async function generateBatch(event) {
             setTimeout(() => location.reload(), 3000);
         }
     } else {
-        showToast(result.error || '生成失败', 'error');
+        showToast(getFriendlyAdminErrorMessage(result.error || '生成失败', 0, 'common'), 'error');
     }
 }
 
@@ -1499,7 +1692,8 @@ async function loadModalMemberList(teamId) {
 
             if (window.lucide) lucide.createIcons();
         } else {
-            const errorMsg = `<tr><td colspan="4" style="text-align: center; color: var(--danger);">${escapeHtml(result.error)}</td></tr>`;
+            const friendlyError = getFriendlyAdminErrorMessage(result.error || '加载失败', 0, 'member');
+            const errorMsg = `<tr><td colspan="4" style="text-align: center; color: var(--danger);">${escapeHtml(friendlyError)}</td></tr>`;
             if (joinedTableBody) joinedTableBody.innerHTML = errorMsg;
             if (invitedTableBody) invitedTableBody.innerHTML = errorMsg;
         }
@@ -1530,10 +1724,10 @@ async function revokeInvite(teamId, email, inModal = false) {
                 setTimeout(() => location.reload(), 1000);
             }
         } else {
-            showToast(result.error || '撤回失败', 'error');
+            showToast(getFriendlyAdminErrorMessage(result.error || '撤回失败', 0, 'member'), 'error');
         }
     } catch (error) {
-        showToast('网络错误', 'error');
+        showToast(getFriendlyAdminErrorMessage(error.message || '网络错误', 0, 'member'), 'error');
     }
 }
 
@@ -1571,10 +1765,10 @@ async function handleAddMember(event) {
                 window.location.reload();
             }, 800);
         } else {
-            showToast(result.error || '添加失败', 'error');
+            showToast(getFriendlyAdminErrorMessage(result.error || '添加失败', 0, 'member'), 'error');
         }
     } catch (error) {
-        showToast('网络错误', 'error');
+        showToast(getFriendlyAdminErrorMessage(error.message || '网络错误', 0, 'member'), 'error');
     } finally {
         submitButton.disabled = false;
         submitButton.innerHTML = originalText;
@@ -1600,10 +1794,10 @@ async function deleteMember(teamId, userId, email, inModal = false) {
                 setTimeout(() => location.reload(), 1000);
             }
         } else {
-            showToast(result.error || '删除失败', 'error');
+            showToast(getFriendlyAdminErrorMessage(result.error || '删除失败', 0, 'member'), 'error');
         }
     } catch (error) {
-        showToast('网络错误', 'error');
+        showToast(getFriendlyAdminErrorMessage(error.message || '网络错误', 0, 'member'), 'error');
     }
 }
 
@@ -1646,7 +1840,7 @@ async function generateWelfareCode() {
         await copyToClipboard(result.code || '');
         showToast(`通用兑换码已更新并复制，剩余次数 ${result.remaining}/${result.limit}`, 'success');
     } catch (error) {
-        showToast(error.message || '生成通用兑换码失败', 'error');
+        showToast(getFriendlyAdminErrorMessage(error.message || '生成通用兑换码失败', 0, 'common'), 'error');
     } finally {
         const btn = document.getElementById('generateWelfareCodeBtn');
         if (btn) btn.disabled = false;
