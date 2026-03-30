@@ -10,3 +10,4 @@ services:
     restart: always
     environment:
       - DATABASE_URL=sqlite+aiosqlite:////app/data/team_manage.db
+      - APP_PORT=${APP_PORT:-8008}
