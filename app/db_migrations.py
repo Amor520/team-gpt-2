@@ -137,6 +137,16 @@ def run_auto_migration():
             cursor.execute("ALTER TABLE redemption_codes ADD COLUMN reusable_by_seat BOOLEAN DEFAULT 0")
             migrations_applied.append("redemption_codes.reusable_by_seat")
 
+        if not column_exists(cursor, "redemption_codes", "max_redemptions"):
+            logger.info("添加 redemption_codes.max_redemptions 字段")
+            cursor.execute("ALTER TABLE redemption_codes ADD COLUMN max_redemptions INTEGER")
+            migrations_applied.append("redemption_codes.max_redemptions")
+
+        if not column_exists(cursor, "redemption_codes", "redemption_window_days"):
+            logger.info("添加 redemption_codes.redemption_window_days 字段")
+            cursor.execute("ALTER TABLE redemption_codes ADD COLUMN redemption_window_days INTEGER")
+            migrations_applied.append("redemption_codes.redemption_window_days")
+
         if not table_exists(cursor, "team_email_mappings"):
             logger.info("创建 team_email_mappings 表")
             cursor.execute("""

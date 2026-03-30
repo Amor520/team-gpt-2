@@ -235,6 +235,100 @@ class RedeemFlowServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0].team_id, 2)
 
+    async def test_validate_code_honors_recent_usage_window_limit(self):
+        async with self.session_factory() as session:
+            team = Team(
+                id=60,
+                email="owner-60@example.com",
+                access_token_encrypted="token-60",
+                account_id="acct-60",
+                team_name="Window Team",
+                current_members=1,
+                max_members=6,
+                status="active",
+                pool_type="normal",
+            )
+            code = RedemptionCode(
+                code="STUDENT-001",
+                status="used",
+                pool_type="normal",
+                reusable_by_seat=True,
+                max_redemptions=3,
+                redemption_window_days=30,
+            )
+            session.add_all([team, code])
+            await session.commit()
+
+            session.add_all([
+                RedemptionRecord(
+                    email="one@example.com",
+                    code="STUDENT-001",
+                    team_id=60,
+                    account_id="acct-60",
+                    redeemed_at=get_now() - timedelta(days=2),
+                ),
+                RedemptionRecord(
+                    email="two@example.com",
+                    code="STUDENT-001",
+                    team_id=60,
+                    account_id="acct-60",
+                    redeemed_at=get_now() - timedelta(days=10),
+                ),
+                RedemptionRecord(
+                    email="old@example.com",
+                    code="STUDENT-001",
+                    team_id=60,
+                    account_id="acct-60",
+                    redeemed_at=get_now() - timedelta(days=40),
+                ),
+            ])
+            await session.commit()
+
+            service = RedemptionService()
+            result = await service.validate_code("STUDENT-001", session)
+
+            self.assertTrue(result["success"])
+            self.assertTrue(result["valid"])
+            self.assertEqual(result["redemption_code"]["used_count"], 2)
+            self.assertEqual(result["redemption_code"]["limit"], 3)
+            self.assertEqual(result["redemption_code"]["redemption_window_days"], 30)
+
+            session.add(
+                RedemptionRecord(
+                    email="three@example.com",
+                    code="STUDENT-001",
+                    team_id=60,
+                    account_id="acct-60",
+                    redeemed_at=get_now() - timedelta(days=1),
+                )
+            )
+            await session.commit()
+
+            result = await service.validate_code("STUDENT-001", session)
+
+            self.assertTrue(result["success"])
+            self.assertFalse(result["valid"])
+            self.assertEqual(result["reason"], "兑换码次数已用完，无法进行兑换")
+
+    async def test_validate_code_supports_unlimited_reusable_code(self):
+        async with self.session_factory() as session:
+            code = RedemptionCode(
+                code="STUDENT-UNLIMITED",
+                status="used",
+                pool_type="normal",
+                reusable_by_seat=True,
+                max_redemptions=-1,
+            )
+            session.add(code)
+            await session.commit()
+
+            service = RedemptionService()
+            result = await service.validate_code("STUDENT-UNLIMITED", session)
+
+            self.assertTrue(result["success"])
+            self.assertTrue(result["valid"])
+            self.assertIsNone(result["redemption_code"]["limit"])
+
     async def test_sync_reconcile_requires_three_misses_before_removed(self):
         await self._seed_basic_data()
         team_service = TeamService.__new__(TeamService)

@@ -109,6 +109,8 @@ class RedemptionCode(Base):
     warranty_expires_at = Column(DateTime, comment="质保到期时间(首次使用后根据质保时长计算)")
     pool_type = Column(String(20), default="normal", comment="兑换池类型: normal/welfare")
     reusable_by_seat = Column(Boolean, default=False, comment="是否可按席位重复使用")
+    max_redemptions = Column(Integer, comment="最大可兑换次数: NULL 按池容量限制, -1 不限次数")
+    redemption_window_days = Column(Integer, comment="兑换次数统计窗口(天)，为空表示累计统计")
 
     # 关系
     redemption_records = relationship("RedemptionRecord", back_populates="redemption_code")

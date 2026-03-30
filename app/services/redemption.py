@@ -418,7 +418,9 @@ class RedemptionService:
         has_warranty: bool = False,
         warranty_days: int = 30,
         pool_type: str = "normal",
-        reusable_by_seat: bool = False
+        reusable_by_seat: bool = False,
+        max_redemptions: Optional[int] = None,
+        redemption_window_days: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         生成单个兑换码
@@ -481,7 +483,9 @@ class RedemptionService:
                 has_warranty=has_warranty,
                 warranty_days=warranty_days,
                 pool_type=pool_type,
-                reusable_by_seat=reusable_by_seat
+                reusable_by_seat=reusable_by_seat,
+                max_redemptions=max_redemptions,
+                redemption_window_days=redemption_window_days,
             )
 
             db_session.add(redemption_code)
@@ -514,7 +518,9 @@ class RedemptionService:
         has_warranty: bool = False,
         warranty_days: int = 30,
         pool_type: str = "normal",
-        reusable_by_seat: bool = False
+        reusable_by_seat: bool = False,
+        max_redemptions: Optional[int] = None,
+        redemption_window_days: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         批量生成兑换码
@@ -573,7 +579,9 @@ class RedemptionService:
                     has_warranty=has_warranty,
                     warranty_days=warranty_days,
                     pool_type=pool_type,
-                    reusable_by_seat=reusable_by_seat
+                    reusable_by_seat=reusable_by_seat,
+                    max_redemptions=max_redemptions,
+                    redemption_window_days=redemption_window_days,
                 )
                 db_session.add(redemption_code)
 
@@ -734,28 +742,54 @@ class RedemptionService:
                     "error": None
                 }
 
-            # 3. 席位可复用兑换码次数限制校验（按池内总席位）
-            if redemption_code.reusable_by_seat:
-                total_seats_stmt = select(func.sum(Team.max_members)).where(
-                    Team.pool_type == (redemption_code.pool_type or "normal")
-                )
-                total_seats_result = await db_session.execute(total_seats_stmt)
-                total_seats = int(total_seats_result.scalar() or 0)
+            effective_limit: Optional[int] = None
+            used_count: Optional[int] = None
 
+            # 3. 席位可复用兑换码次数限制校验
+            if redemption_code.reusable_by_seat:
+                max_redemptions = redemption_code.max_redemptions
+                window_days = (
+                    int(redemption_code.redemption_window_days)
+                    if redemption_code.redemption_window_days and redemption_code.redemption_window_days > 0
+                    else None
+                )
                 used_count_stmt = select(func.count(RedemptionRecord.id)).where(
                     RedemptionRecord.code == code
                 )
+                if window_days:
+                    window_start = get_now() - timedelta(days=window_days)
+                    used_count_stmt = used_count_stmt.where(RedemptionRecord.redeemed_at >= window_start)
+
                 used_count_result = await db_session.execute(used_count_stmt)
                 used_count = int(used_count_result.scalar() or 0)
 
-                if total_seats <= 0 or used_count >= total_seats:
-                    return {
-                        "success": True,
-                        "valid": False,
-                        "reason": "兑换码次数已用完，无法进行兑换",
-                        "redemption_code": None,
-                        "error": None
-                    }
+                if max_redemptions is not None:
+                    if max_redemptions >= 0:
+                        effective_limit = int(max_redemptions)
+                        if used_count >= effective_limit:
+                            return {
+                                "success": True,
+                                "valid": False,
+                                "reason": "兑换码次数已用完，无法进行兑换",
+                                "redemption_code": None,
+                                "error": None
+                            }
+                else:
+                    total_seats_stmt = select(func.sum(Team.max_members)).where(
+                        Team.pool_type == (redemption_code.pool_type or "normal")
+                    )
+                    total_seats_result = await db_session.execute(total_seats_stmt)
+                    total_seats = int(total_seats_result.scalar() or 0)
+                    effective_limit = total_seats
+
+                    if total_seats <= 0 or used_count >= total_seats:
+                        return {
+                            "success": True,
+                            "valid": False,
+                            "reason": "兑换码次数已用完，无法进行兑换",
+                            "redemption_code": None,
+                            "error": None
+                        }
 
             status_changed = self._sync_code_status_fields(redemption_code)
             if status_changed:
@@ -796,7 +830,11 @@ class RedemptionService:
                     "has_warranty": redemption_code.has_warranty,
                     "warranty_days": redemption_code.warranty_days,
                     "pool_type": redemption_code.pool_type or "normal",
-                    "reusable_by_seat": bool(redemption_code.reusable_by_seat)
+                    "reusable_by_seat": bool(redemption_code.reusable_by_seat),
+                    "max_redemptions": redemption_code.max_redemptions,
+                    "redemption_window_days": redemption_code.redemption_window_days,
+                    "limit": effective_limit if redemption_code.reusable_by_seat else None,
+                    "used_count": used_count if redemption_code.reusable_by_seat else None,
                 },
                 "error": None
             }
@@ -983,6 +1021,10 @@ class RedemptionService:
                     "has_warranty": code.has_warranty,
                     "warranty_days": code.warranty_days,
                     "warranty_expires_at": code.warranty_expires_at.isoformat() if code.warranty_expires_at else None,
+                    "reusable_by_seat": bool(code.reusable_by_seat),
+                    "max_redemptions": code.max_redemptions,
+                    "redemption_window_days": code.redemption_window_days,
+                    "record_count": record_counts.get(code.code, 0),
                     "can_delete": record_counts.get(code.code, 0) == 0
                 })
 
