@@ -1,3 +1,4 @@
+import re
 import unittest
 from unittest.mock import patch
 
@@ -79,20 +80,13 @@ class NotificationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         request = calls[0]
         self.assertEqual(request["headers"], {})
-        self.assertEqual(
-            request["json"],
-            {
-                "msgtype": "text",
-                "text": {
-                    "content": (
-                        "GPT Team 库存预警\n"
-                        "当前总可用车位：2\n"
-                        "预警阈值：6\n"
-                        "库存不足预警：系统总可用车位仅剩 2，已低于预警阈值 6，请及时补货导入新账号。"
-                    )
-                },
-            },
-        )
+        self.assertEqual(request["json"]["msgtype"], "markdown")
+        content = request["json"]["markdown"]["content"]
+        self.assertIn("GPT Team <font color=\"warning\">库存预警</font>", content)
+        self.assertIn("当前总可用车位：<font color=\"warning\">2</font>", content)
+        self.assertIn("预警阈值：<font color=\"comment\">6</font>", content)
+        self.assertIn("库存不足预警：系统总可用车位仅剩 2，已低于预警阈值 6，请及时补货导入新账号。", content)
+        self.assertRegex(content, r"发送时间：<font color=\"comment\">\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}</font>")
 
     async def test_generic_test_webhook_uses_test_payload(self):
         service = NotificationService()
@@ -143,17 +137,10 @@ class NotificationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         request = calls[0]
         self.assertEqual(request["headers"], {})
-        self.assertEqual(
-            request["json"],
-            {
-                "msgtype": "text",
-                "text": {
-                    "content": (
-                        "GPT Team 库存测试\n"
-                        "当前总可用车位：4\n"
-                        "预警阈值：6\n"
-                        "库存预警测试：系统当前总可用车位为 4，当前预警阈值为 6。"
-                    )
-                },
-            },
-        )
+        self.assertEqual(request["json"]["msgtype"], "markdown")
+        content = request["json"]["markdown"]["content"]
+        self.assertIn("GPT Team <font color=\"comment\">库存测试</font>", content)
+        self.assertIn("当前总可用车位：<font color=\"warning\">4</font>", content)
+        self.assertIn("预警阈值：<font color=\"comment\">6</font>", content)
+        self.assertIn("库存预警测试：系统当前总可用车位为 4，当前预警阈值为 6。", content)
+        self.assertRegex(content, r"发送时间：<font color=\"comment\">\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}</font>")

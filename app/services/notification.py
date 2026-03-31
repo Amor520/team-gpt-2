@@ -1,5 +1,6 @@
 import logging
 from urllib.parse import urlparse
+from datetime import datetime
 
 import httpx
 from typing import Optional
@@ -70,6 +71,28 @@ class NotificationService:
             return f"库存预警测试：系统当前总可用车位为 {available_seats}，当前预警阈值为 {threshold}。"
         return f"库存不足预警：系统总可用车位仅剩 {available_seats}，已低于预警阈值 {threshold}，请及时补货导入新账号。"
 
+    @staticmethod
+    def _build_wecom_markdown_content(available_seats: int, threshold: int, is_test: bool = False) -> str:
+        title = "库存测试" if is_test else "库存预警"
+        status_line = (
+            f"### GPT Team <font color=\"comment\">{title}</font>"
+            if is_test
+            else f"### GPT Team <font color=\"warning\">{title}</font>"
+        )
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        message = NotificationService._build_low_stock_message(
+            available_seats,
+            threshold,
+            is_test=is_test,
+        )
+        return (
+            f"{status_line}\n"
+            f"> 当前总可用车位：<font color=\"warning\">{available_seats}</font>\n"
+            f"> 预警阈值：<font color=\"comment\">{threshold}</font>\n"
+            f"> 发送时间：<font color=\"comment\">{timestamp}</font>\n"
+            f"> 说明：{message}"
+        )
+
     def _build_notification_request(
         self,
         url: str,
@@ -83,13 +106,12 @@ class NotificationService:
 
         if self._is_wecom_webhook(url):
             payload = {
-                "msgtype": "text",
-                "text": {
-                    "content": (
-                        f"GPT Team {'库存测试' if is_test else '库存预警'}\n"
-                        f"当前总可用车位：{available_seats}\n"
-                        f"预警阈值：{threshold}\n"
-                        f"{message}"
+                "msgtype": "markdown",
+                "markdown": {
+                    "content": self._build_wecom_markdown_content(
+                        available_seats,
+                        threshold,
+                        is_test=is_test,
                     )
                 }
             }
