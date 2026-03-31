@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     # 应用配置
     app_name: str = "GPT Team 管理系统"
-    app_version: str = "0.1.0"
+    app_version: str = "1.31.1"
     app_host: str = "0.0.0.0"
     app_port: int = 8008
     debug: bool = True

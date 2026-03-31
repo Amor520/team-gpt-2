@@ -184,7 +184,7 @@ cp .env.example .env
 ```env
 # 应用配置
 APP_NAME=GPT Team 管理系统
-APP_VERSION=0.1.0
+APP_VERSION=1.31.1
 APP_HOST=0.0.0.0
 APP_PORT=8008
 DEBUG=True

@@ -23,6 +23,7 @@ from app.services.settings import (
     DEFAULT_UI_THEME,
 )
 from app.services.cliproxyapi import cliproxyapi_service
+from app.services.notification import notification_service
 from app.models import RedemptionCode, RedemptionRecord, Team
 from app.utils.time_utils import get_now
 
@@ -2255,6 +2256,61 @@ async def update_webhook_settings(
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"success": False, "error": "更新失败，请稍后重试"}
+        )
+
+
+@router.post("/settings/webhook/test")
+async def test_webhook_settings(
+    webhook_data: WebhookSettingsRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_admin)
+):
+    """使用当前库存数据立即测试发送 Webhook 通知。"""
+    try:
+        webhook_url = webhook_data.webhook_url.strip()
+        api_key = webhook_data.api_key.strip()
+        threshold = webhook_data.low_stock_threshold
+
+        if not webhook_url:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"success": False, "error": "请先填写 Webhook URL"}
+            )
+
+        logger.info("管理员测试 Webhook 通知: url=%s threshold=%s", webhook_url, threshold)
+        current_seats = await team_service.get_total_available_seats(db)
+        sent = await notification_service.send_webhook_notification(
+            webhook_url,
+            current_seats,
+            threshold,
+            api_key=api_key,
+            is_test=True,
+        )
+
+        if sent:
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "message": f"测试消息已发送，当前总可用车位 {current_seats}",
+                    "current_seats": current_seats,
+                    "threshold": threshold,
+                }
+            )
+
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={
+                "success": False,
+                "error": "测试消息发送失败，请检查 Webhook 地址或目标服务状态",
+                "current_seats": current_seats,
+                "threshold": threshold,
+            }
+        )
+    except Exception as e:
+        logger.exception("测试 Webhook 通知失败")
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"success": False, "error": "测试发送失败，请稍后重试"}
         )
 
 

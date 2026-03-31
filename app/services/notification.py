@@ -1,7 +1,8 @@
 import logging
+from urllib.parse import urlparse
+
 import httpx
-import asyncio
-from typing import Optional, Any, Dict
+from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.settings import settings_service
 from app.services.redemption import RedemptionService
@@ -52,26 +53,89 @@ class NotificationService:
                 logger.error(f"检查库存并通知过程发生错误: {e}")
                 return False
 
-    async def send_webhook_notification(self, url: str, available_seats: int, threshold: int, api_key: Optional[str] = None) -> bool:
+    @staticmethod
+    def _is_wecom_webhook(url: str) -> bool:
+        """判断是否为企业微信机器人 Webhook。"""
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            return False
+
+        host = (parsed.hostname or "").lower()
+        return host == "qyapi.weixin.qq.com" and parsed.path.startswith("/cgi-bin/webhook/send")
+
+    @staticmethod
+    def _build_low_stock_message(available_seats: int, threshold: int, is_test: bool = False) -> str:
+        if is_test:
+            return f"库存预警测试：系统当前总可用车位为 {available_seats}，当前预警阈值为 {threshold}。"
+        return f"库存不足预警：系统总可用车位仅剩 {available_seats}，已低于预警阈值 {threshold}，请及时补货导入新账号。"
+
+    def _build_notification_request(
+        self,
+        url: str,
+        available_seats: int,
+        threshold: int,
+        api_key: Optional[str] = None,
+        is_test: bool = False,
+    ) -> tuple[dict, dict]:
+        """根据目标地址构造通知请求内容。"""
+        message = self._build_low_stock_message(available_seats, threshold, is_test=is_test)
+
+        if self._is_wecom_webhook(url):
+            payload = {
+                "msgtype": "text",
+                "text": {
+                    "content": (
+                        f"GPT Team {'库存测试' if is_test else '库存预警'}\n"
+                        f"当前总可用车位：{available_seats}\n"
+                        f"预警阈值：{threshold}\n"
+                        f"{message}"
+                    )
+                }
+            }
+            return payload, {}
+
+        payload = {
+            "event": "low_stock_test" if is_test else "low_stock",
+            "current_seats": available_seats,
+            "threshold": threshold,
+            "message": message,
+        }
+        headers = {}
+        if api_key:
+            headers["X-API-Key"] = api_key
+        return payload, headers
+
+    async def send_webhook_notification(
+        self,
+        url: str,
+        available_seats: int,
+        threshold: int,
+        api_key: Optional[str] = None,
+        is_test: bool = False,
+    ) -> bool:
         """
         发送 Webhook 通知
         """
         try:
-            payload = {
-                "event": "low_stock",
-                "current_seats": available_seats,
-                "threshold": threshold,
-                "message": f"库存不足预警：系统总可用车位仅剩 {available_seats}，已低于预警阈值 {threshold}，请及时补货导入新账号。"
-            }
-            
-            headers = {}
-            if api_key:
-                headers["X-API-Key"] = api_key
-                
+            payload, headers = self._build_notification_request(
+                url,
+                available_seats,
+                threshold,
+                api_key,
+                is_test=is_test,
+            )
+            webhook_type = "wecom" if self._is_wecom_webhook(url) else "generic"
+
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(url, json=payload, headers=headers)
                 response.raise_for_status()
-                logger.info(f"Webhook 通知发送成功: {url}")
+                logger.info(
+                    "Webhook 通知发送成功: type=%s mode=%s url=%s",
+                    webhook_type,
+                    "test" if is_test else "live",
+                    url,
+                )
                 return True
         except Exception as e:
             logger.error(f"发送 Webhook 通知失败: {e}")

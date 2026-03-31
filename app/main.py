@@ -279,7 +279,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="GPT Team 管理系统",
     description="ChatGPT Team 账号管理和兑换码自动邀请系统",
-    version="0.1.0",
+    version="1.31.1",
     lifespan=lifespan
 )
 
